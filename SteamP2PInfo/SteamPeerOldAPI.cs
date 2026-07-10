@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Net;
 using Steamworks;
 
 namespace SteamP2PInfo
@@ -65,6 +66,22 @@ namespace SteamP2PInfo
         public static bool IsSessionStateOK(P2PSessionState_t session)
         {
             return session.m_eP2PSessionError == 0 && (session.m_bConnecting != 0 || session.m_bConnectionActive != 0);
+        }
+
+        public override bool TryGetRemoteEndpoint(out PeerNetworkEndpoint endpoint)
+        {
+            endpoint = null;
+            if (mSessionState.m_nRemoteIP == 0 || mSessionState.m_nRemotePort == 0)
+                return false;
+
+            byte[] ipBytes = BitConverter.GetBytes(mSessionState.m_nRemoteIP).Reverse().ToArray();
+            endpoint = new PeerNetworkEndpoint(new IPAddress(ipBytes), mSessionState.m_nRemotePort);
+            return true;
+        }
+
+        public override bool CloseSession()
+        {
+            return SteamNetworking.CloseP2PSessionWithUser(SteamID);
         }
     }
 }

@@ -84,6 +84,18 @@ namespace SteamP2PInfo.Config
         public bool PlaySoundOnNewSession { get; set; } = false;
 
         /// <summary>
+        /// If true, peers with a valid ping strictly greater than 100 ms are blocked and disconnected.
+        /// </summary>
+        [JsonProperty("disconnect_high_ping_enabled")]
+        [ConfigBindingElement("Disconnect peers above 100 ms", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "If enabled, the first valid ping above 100 ms creates an exact UDP firewall block before closing the Steam P2P session.",
+            UIElementProperties: new object[] {
+                new object[] { "OnContent", "Yes" },
+                new object[] { "OffContent", "No" }
+            })]
+        public bool DisconnectHighPingEnabled { get; set; } = false;
+
+        /// <summary>
         /// Overlay configuration for this game. Includes things like placement, enabled/disabled, etc.
         /// </summary>
         [JsonProperty("overlay")]

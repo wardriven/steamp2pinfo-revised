@@ -37,6 +37,7 @@ namespace SteamP2PInfo
         private int timerTicks = 0;
         private int overlayHotkey = 0;
         private int previousPeersAmount = 0;
+        private P2PEnforcementCoordinator enforcementCoordinator;
 
         private const string STEAM_COMMAND = "log_ipc \"BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage\"";
 
@@ -57,6 +58,13 @@ namespace SteamP2PInfo
 
             InitializeComponent();
             Closing += MainWindow_Closed;
+
+            string staleRuleCleanupError = WindowsFirewallBlockService.RemoveStaleRules();
+            if (staleRuleCleanupError != null)
+            {
+                MessageBox.Show($"Could not remove stale SteamP2PInfo firewall rules from an earlier run:\n\n{staleRuleCleanupError}",
+                    "Firewall Cleanup Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
 
             peers = new ObservableCollection<SteamPeerBase>();
             dataGridSession.DataContext = peers;
@@ -161,6 +169,10 @@ namespace SteamP2PInfo
 
         private void MainWindow_Closed(object sender, EventArgs e)
         {
+            timer?.Change(Timeout.Infinite, Timeout.Infinite);
+            enforcementCoordinator?.Dispose();
+            enforcementCoordinator = null;
+            SteamPeerManager.Shutdown();
             if (GameConfig.Current != null) GameConfig.Current.Save();
             Settings.Default.Save();
             if (overlay != null) overlay.Close();
@@ -241,6 +253,21 @@ namespace SteamP2PInfo
                     ConfigTab.Children.Add(configEditor);
 
                     ETWPingMonitor.Start();
+                    string gameExecutablePath;
+                    try
+                    {
+                        gameExecutablePath = Process.GetProcessById((int)wInfo.ProcessId).MainModule.FileName;
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Could not resolve the selected game's executable path, which is required for exact firewall scoping.\n\n{ex.Message}",
+                            "Firewall Setup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        Close();
+                        return;
+                    }
+
+                    enforcementCoordinator = new P2PEnforcementCoordinator(gameExecutablePath);
+                    enforcementCoordinator.Start();
                     timer.Change(0, 1000);
                 }
             }

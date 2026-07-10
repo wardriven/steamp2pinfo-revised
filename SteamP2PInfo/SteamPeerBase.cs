@@ -86,6 +86,16 @@ namespace SteamP2PInfo
         /// </summary>
         public abstract bool UpdatePeerInfo();
 
+        /// <summary>
+        /// Return the exact remote IP/UDP port that can safely scope a firewall rule.
+        /// </summary>
+        public abstract bool TryGetRemoteEndpoint(out PeerNetworkEndpoint endpoint);
+
+        /// <summary>
+        /// Ask Steam to close the logical session with this peer.
+        /// </summary>
+        public abstract bool CloseSession();
+
         public virtual void Dispose() { }
     }
 }

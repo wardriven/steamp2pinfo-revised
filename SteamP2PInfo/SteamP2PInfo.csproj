@@ -278,6 +278,8 @@
     <Compile Include="HotkeyConverter.cs" />
     <Compile Include="HotkeyManager.cs" />
     <Compile Include="OverlayTextBlock.cs" />
+    <Compile Include="P2PEnforcementCoordinator.cs" />
+    <Compile Include="PeerNetworkEndpoint.cs" />
     <Compile Include="OverlayWindow.xaml.cs">
       <DependentUpon>OverlayWindow.xaml</DependentUpon>
     </Compile>
@@ -285,6 +287,7 @@
     <Compile Include="SteamPeerNewAPI.cs" />
     <Compile Include="SteamPeerOldAPI.cs" />
     <Compile Include="SteamPeerManager.cs" />
+    <Compile Include="WindowsFirewallBlockService.cs" />
     <Compile Include="Settings.Designer.cs">
       <AutoGen>True</AutoGen>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>

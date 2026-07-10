@@ -12,7 +12,21 @@ Download the lastest release from the Releases tab and extract the ZIP file in a
 ```
 log_ipc "BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage"
 ```
-The program should now be ready! You can then go in the "Config" tab to customize game-specific settings. 
+The program should now be ready! You can then go in the "Config" tab to customize game-specific settings.
+
+## Disconnecting high-ping peers
+
+SteamP2PInfo can automatically block and disconnect P2P peers whose ping exceeds 100 ms. This is disabled by default and can be enabled per game from the **Config** tab using **Disconnect peers above 100 ms**.
+
+When enabled:
+
+- Peers are evaluated by one serialized enforcement loop every 250 ms.
+- The first valid ping strictly greater than 100 ms triggers enforcement. A ping of exactly 100 ms is allowed, and unavailable or invalid measurements are ignored.
+- For a peer with an exact network endpoint, SteamP2PInfo creates inbound and outbound Windows Firewall block rules scoped to the selected game executable, UDP, and that peer's exact remote IP address and port.
+- Both firewall rules are activated and read back to verify their scope before SteamP2PInfo asks Steam to close the P2P session. A partially created rule pair is rolled back.
+- Temporary rules are removed when the peer/auth session ends, the lobby is left, the game or SteamP2PInfo exits, or the feature is disabled. Rules left by a crash are removed the next time SteamP2PInfo starts.
+
+The rules never target `steam.exe`, all UDP traffic, a Valve address range, or a broad Steam port range, so unrelated Steam client services are outside their application scope. Blocking a shared Steam Datagram Relay endpoint could affect multiple P2P peers, which is acceptable, but Steam does not always expose a usable relay IP/port to this companion process. When no exact endpoint is available, SteamP2PInfo can only request logical Steam-session closure and logs this as a limitation; it does not claim that Windows Firewall isolated the connection.
 
 # Known Issues
 ### Peers not getting detected in rare circumstances (versions < 1.2.0)
@@ -26,7 +40,7 @@ Not really an issue, but I plan to implement a GUI editor for this in the future
 
 # FAQ
 ### Why does it require administrator privileges?
-While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence in this the pings are computed by monitoring STUN packets that are sent to and recieved from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking.
+While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence in this the pings are computed by monitoring STUN packets that are sent to and recieved from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking. Administrator privileges are also required to create, verify, and remove the temporary Windows Firewall rules used by the optional high-ping disconnect feature.
 
 ### Why do I have to use the Steam console / IPC logging? Isn't there an cleaner way to monitor lobbies?
 
