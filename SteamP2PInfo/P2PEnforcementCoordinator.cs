@@ -15,7 +15,8 @@ namespace SteamP2PInfo
         private readonly DispatcherTimer timer;
         private readonly int gameProcessId;
         private IFirewallBlockService firewall;
-        private readonly HashSet<ulong> handledPeers = new HashSet<ulong>();
+        private readonly PeerQuarantineLifecycle quarantinedPeers = new PeerQuarantineLifecycle();
+        private readonly HashSet<ulong> returningPeers = new HashSet<ulong>();
         private bool evaluating;
         private bool disposed;
         private bool firewallErrorShown;
@@ -28,6 +29,7 @@ namespace SteamP2PInfo
                 Interval = EnforcementInterval
             };
             timer.Tick += Timer_Tick;
+            SteamPeerManager.PeerBeginAuthSession += SteamPeerManager_PeerBeginAuthSession;
             SteamPeerManager.PeerRemoved += SteamPeerManager_PeerRemoved;
             SteamPeerManager.LobbyLeft += SteamPeerManager_LobbyLeft;
         }
@@ -46,12 +48,14 @@ namespace SteamP2PInfo
             disposed = true;
             timer.Stop();
             timer.Tick -= Timer_Tick;
+            SteamPeerManager.PeerBeginAuthSession -= SteamPeerManager_PeerBeginAuthSession;
             SteamPeerManager.PeerRemoved -= SteamPeerManager_PeerRemoved;
             SteamPeerManager.LobbyLeft -= SteamPeerManager_LobbyLeft;
             firewall?.RemoveAll();
             firewall?.Dispose();
             firewall = null;
-            handledPeers.Clear();
+            quarantinedPeers.Clear();
+            returningPeers.Clear();
         }
 
         internal static bool ShouldDisconnect(double ping, double thresholdMs)
@@ -75,10 +79,11 @@ namespace SteamP2PInfo
             {
                 if (GameConfig.Current == null || !GameConfig.Current.DisconnectHighPingEnabled)
                 {
-                    if (handledPeers.Count > 0)
+                    if (quarantinedPeers.Count > 0 || returningPeers.Count > 0)
                     {
                         firewall?.RemoveAll();
-                        handledPeers.Clear();
+                        quarantinedPeers.Clear();
+                        returningPeers.Clear();
                     }
                     return;
                 }
@@ -95,7 +100,7 @@ namespace SteamP2PInfo
         private void Evaluate(SteamPeerBase peer)
         {
             ulong steamId = peer.SteamID.m_SteamID;
-            bool isQuarantined = handledPeers.Contains(steamId);
+            bool isQuarantined = quarantinedPeers.Contains(steamId);
 
             bool connected;
             try
@@ -133,7 +138,14 @@ namespace SteamP2PInfo
             double ping = peer.Ping;
             double thresholdMs = GameConfig.Current.DisconnectPingThresholdMs;
             if (!ShouldDisconnect(ping, thresholdMs))
+            {
+                if (returningPeers.Remove(steamId))
+                {
+                    Logger.WriteEnforcementLine(
+                        $"[HIGH PING QUARANTINE] Returning peer {steamId} re-evaluated at {ping:F1} ms (limit {thresholdMs:F1} ms); no WFP block was applied.");
+                }
                 return;
+            }
 
             if (!hasReportedEndpoint)
             {
@@ -151,12 +163,34 @@ namespace SteamP2PInfo
                 return;
             }
 
+            // Mark the peer before CloseSession. Steam can synchronously emit an
+            // EndAuthSession callback from the companion process; that callback
+            // must retain this exact-flow block instead of clearing it.
+            quarantinedPeers.Retain(steamId);
+            bool wasReturningPeer = returningPeers.Remove(steamId);
+
             // The exact UDP flow is blocked at WFP transport layers before the
             // companion process asks Steam to release its logical session.
             bool sessionClosed = peer.CloseSession();
-            handledPeers.Add(steamId);
             string scope = string.IsNullOrWhiteSpace(blockResult.Details) ? "exact UDP flow" : blockResult.Details;
-            Logger.WriteEnforcementLine($"[HIGH PING DISCONNECT] {steamId} measured {ping:F1} ms (limit {thresholdMs:F1} ms); WFP blocked the {scope} to {endpoint}; Steam close result: {sessionClosed}");
+            string peerDescription = wasReturningPeer ? "Returning peer" : "Peer";
+            Logger.WriteEnforcementLine($"[HIGH PING DISCONNECT] {peerDescription} {steamId} measured {ping:F1} ms (limit {thresholdMs:F1} ms); WFP blocked the {scope} to {endpoint}; Steam close result: {sessionClosed}");
+        }
+
+        private void SteamPeerManager_PeerBeginAuthSession(ulong steamId)
+        {
+            if (!quarantinedPeers.Contains(steamId))
+                return;
+
+            Logger.WriteEnforcementLine(
+                $"[HIGH PING QUARANTINE] Confirmed new BeginAuthSession for returning peer {steamId}; clearing that peer's retained WFP filters before creating the new peer entry.");
+
+            if (!quarantinedPeers.ClearForConfirmedBeginAuthSession(steamId, peerId => firewall?.Remove(peerId)))
+                return;
+
+            returningPeers.Add(steamId);
+            Logger.WriteEnforcementLine(
+                $"[HIGH PING QUARANTINE] Cleared retained WFP filters for {steamId}; the returning session will be re-evaluated under the current ping limit.");
         }
 
         private void SteamPeerManager_PeerRemoved(ulong steamId, PeerRemovalReason reason)
@@ -166,23 +200,23 @@ namespace SteamP2PInfo
             // practice the game can remain connected or recreate the session immediately.
             // Keep enforced rules for the lobby lifetime so the quarantine cannot disappear
             // as a side effect of our own close call.
-            if (handledPeers.Contains(steamId))
+            if (quarantinedPeers.ShouldRetainAfterPeerRemoval(steamId))
             {
                 Logger.WriteEnforcementLine(
-                    $"[HIGH PING QUARANTINE] Retaining firewall rules for {steamId} after {reason}; companion IPC removal does not prove the game's connection ended.");
+                    $"[HIGH PING QUARANTINE] Retaining WFP filters for {steamId} after {reason}; companion IPC removal does not prove the game's connection ended. Waiting for a confirmed new BeginAuthSession before clearing this peer's quarantine.");
                 return;
             }
 
             firewall?.Remove(steamId);
-            handledPeers.Remove(steamId);
+            returningPeers.Remove(steamId);
         }
 
         private void SteamPeerManager_LobbyLeft()
         {
-            if (handledPeers.Count > 0)
+            if (quarantinedPeers.Count > 0)
             {
                 Logger.WriteEnforcementLine(
-                    $"[HIGH PING QUARANTINE] Ignoring companion LeaveLobby cleanup for {handledPeers.Count} enforced peer(s); rules remain until enforcement is disabled or the game/tool exits.");
+                    $"[HIGH PING QUARANTINE] Ignoring companion LeaveLobby cleanup for {quarantinedPeers.Count} enforced peer(s); rules remain until enforcement is disabled, the game/tool exits, or a confirmed returning BeginAuthSession clears that peer.");
             }
         }
 

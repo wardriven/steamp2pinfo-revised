@@ -52,6 +52,7 @@ namespace SteamP2PInfo
         private static Dictionary<CSteamID, SteamPeerInfo> mPeers = new Dictionary<CSteamID, SteamPeerInfo>();
 
         public static event Action<ulong, PeerRemovalReason> PeerRemoved;
+        public static event Action<ulong> PeerBeginAuthSession;
         public static event Action LobbyLeft;
 
         public static void Init()
@@ -208,6 +209,11 @@ namespace SteamP2PInfo
                         {
                             if (!mPeers.TryGetValue(steamID, out SteamPeerInfo peer))
                             {
+                                // This is a genuinely new manager entry. Notify
+                                // enforcement before GetPeer can accept or the
+                                // timer can evaluate the returning session.
+                                PeerBeginAuthSession?.Invoke(steamID.m_SteamID);
+
                                 var newPeerInfo = new SteamPeerInfo(GetPeer(steamID));
                                 if (newPeerInfo.peer is null)
                                 {
