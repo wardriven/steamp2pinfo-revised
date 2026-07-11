@@ -13,6 +13,8 @@ namespace SteamP2PInfo.Config
 {
     public class GameConfig : INotifyPropertyChanged
     {
+        private const string OriginalOverlayBannerFormat = "[{time:HH:mm:ss}] SteamP2PInfo - by tremwil";
+        private const string PingGuardOverlayBannerFormat = "[{time:HH:mm:ss}] Steam P2P INFO /W PingGuard";
         public const double DefaultDisconnectPingThresholdMs = 100d;
         public const double MaximumDisconnectPingThresholdMs = 60000d;
 
@@ -184,6 +186,10 @@ namespace SteamP2PInfo.Config
             {
                 string json = File.ReadAllText($"config\\{processName}.json");
                 Current = JsonConvert.DeserializeObject<GameConfig>(json);
+                if (Current?.OverlayConfig?.BannerFormat == OriginalOverlayBannerFormat)
+                {
+                    Current.OverlayConfig.BannerFormat = PingGuardOverlayBannerFormat;
+                }
                 return false;
             }
         }

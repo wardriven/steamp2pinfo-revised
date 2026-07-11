@@ -8,7 +8,7 @@
         xmlns:config="clr-namespace:SteamP2PInfo.Config"
         mc:Ignorable="d"
         WindowStartupLocation="CenterScreen"
-        Title="Steam P2P Info [VERSION]" Width="800" Height="450">
+        Title="Steam P2P INFO /W PingGuard [v1.0]" Width="800" Height="450">
     <mah:MetroWindow.RightWindowCommands>
         <mah:WindowCommands>
             <TextBlock VerticalAlignment="Center" Margin="0 0 10 0">           
@@ -56,6 +56,12 @@
                         <TextBox Margin="10 0 10 0" Text="{Binding Source={x:Static local:Settings.Default}, Path=SteamWebApiKey}" Width="500" HorizontalAlignment="Left"></TextBox>-->
                         <Label Margin="10 0 10 0" ToolTip="Path to Steam IPC log file. Only change this if you installed Steam somewhere else.">Steam Log File Path:</Label>
                         <TextBox Margin="10 0 10 0" Text="{Binding Source={x:Static local:Settings.Default}, Path=SteamLogPath}" Width="500" HorizontalAlignment="Left"></TextBox>
+                        <GroupBox x:Name="ConfigCredits" Header="Credits" Margin="10 20 10 10" Padding="10">
+                            <StackPanel>
+                                <TextBlock FontWeight="SemiBold">tremwil</TextBlock>
+                                <TextBlock>Bastardize by WAR_DRIVEN</TextBlock>
+                            </StackPanel>
+                        </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
             </mah:MetroTabItem>
