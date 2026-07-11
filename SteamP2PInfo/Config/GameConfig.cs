@@ -13,8 +13,6 @@ namespace SteamP2PInfo.Config
 {
     public class GameConfig : INotifyPropertyChanged
     {
-        private const string OriginalOverlayBannerFormat = "[{time:HH:mm:ss}] SteamP2PInfo - by tremwil";
-        private const string PingGuardOverlayBannerFormat = "[{time:HH:mm:ss}] Steam P2P INFO /W PingGuard";
         public const double DefaultDisconnectPingThresholdMs = 100d;
         public const double MaximumDisconnectPingThresholdMs = 60000d;
 
@@ -113,19 +111,6 @@ namespace SteamP2PInfo.Config
             })]
         public bool AllowSteamOwnedExactFlowFallback { get; set; } = false;
 
-        /// <summary>
-        /// Keep high-ping enforcement failures in the log without interrupting
-        /// play with a modal notification.
-        /// </summary>
-        [JsonProperty("mute_high_ping_enforcement_error_notifications")]
-        [ConfigBindingElement("Mute high-ping enforcement error notifications", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If enabled, high-ping enforcement failures remain in the game log but do not show a pop-up notification.",
-            UIElementProperties: new object[] {
-                new object[] { "OnContent", "Muted" },
-                new object[] { "OffContent", "Show" }
-            })]
-        public bool MuteHighPingEnforcementErrorNotifications { get; set; } = false;
-
         private double disconnectPingThresholdMs = DefaultDisconnectPingThresholdMs;
 
         /// <summary>
@@ -186,10 +171,6 @@ namespace SteamP2PInfo.Config
             {
                 string json = File.ReadAllText($"config\\{processName}.json");
                 Current = JsonConvert.DeserializeObject<GameConfig>(json);
-                if (Current?.OverlayConfig?.BannerFormat == OriginalOverlayBannerFormat)
-                {
-                    Current.OverlayConfig.BannerFormat = PingGuardOverlayBannerFormat;
-                }
                 return false;
             }
         }

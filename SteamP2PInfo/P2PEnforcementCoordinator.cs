@@ -189,7 +189,7 @@ namespace SteamP2PInfo
         private void ReportFirewallError(string message)
         {
             Logger.WriteEnforcementLine($"[ENFORCEMENT ERROR] {message}");
-            if (firewallErrorShown || GameConfig.Current?.MuteHighPingEnforcementErrorNotifications == true)
+            if (firewallErrorShown)
                 return;
 
             firewallErrorShown = true;

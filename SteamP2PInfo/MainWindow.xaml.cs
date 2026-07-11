@@ -68,7 +68,7 @@ namespace SteamP2PInfo
 
             peers = new ObservableCollection<SteamPeerBase>();
             dataGridSession.DataContext = peers;
-            Title = "Steam P2P INFO /W PingGuard [" + VersionCheck.CurrentVersion + "]";
+            Title = "Steam P2P Info " + VersionCheck.CurrentVersion;
 
             timer = new Timer(Timer_Tick, null, Timeout.Infinite, Timeout.Infinite);
             Settings.Default.PropertyChanged += (s, e) => Settings.Default.Save();
@@ -82,7 +82,7 @@ namespace SteamP2PInfo
                     {
                         this.Invoke(() =>
                         {
-                            linkUpdate.NavigateUri = new Uri("https://github.com/wardriven/steamp2pinfo-revised/releases/tag/" + v);
+                            linkUpdate.NavigateUri = new Uri("https://github.com/tremwil/SteamP2PInfo/releases/tag/" + v);
                             textUpdate.Text = string.Format("NEW VERSION ({0}), DOWNLOAD HERE", v);
                             this.ShowMessageAsync("New Version Available", string.Format("{0} is out! Click the link in the title bar to download it.", v));
                         });
@@ -250,15 +250,7 @@ namespace SteamP2PInfo
                     textGameState.Foreground = Brushes.LawnGreen;
 
                     Grid configEditor = ConfigUIBuilder.CreateConfigEditor(GameConfig.Current);
-                    int creditsIndex = ConfigTab.Children.IndexOf(ConfigCredits);
-                    if (creditsIndex >= 0)
-                    {
-                        ConfigTab.Children.Insert(creditsIndex, configEditor);
-                    }
-                    else
-                    {
-                        ConfigTab.Children.Add(configEditor);
-                    }
+                    ConfigTab.Children.Add(configEditor);
 
                     ETWPingMonitor.Start();
                     ETWPingMonitor.TrackProcessUdpFlows((int)wInfo.ProcessId);
