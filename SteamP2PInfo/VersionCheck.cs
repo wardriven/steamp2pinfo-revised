@@ -14,12 +14,12 @@ namespace SteamP2PInfo
 {
     static class VersionCheck
     {
-        public static readonly string CurrentVersion = "V1.2.0";
+        public static readonly string CurrentVersion = "v1.0";
         public static JObject LatestRelease { get; private set; }
 
         public static bool FetchLatest()
         {
-            string query = "https://api.github.com/repos/tremwil/SteamP2PInfo/releases";
+            string query = "https://api.github.com/repos/wardriven/steamp2pinfo-revised/releases";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(query);
             req.UserAgent = "request";
             HttpWebResponse resp;
