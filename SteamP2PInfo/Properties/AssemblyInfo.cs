@@ -7,11 +7,11 @@ using System.Windows;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("SteamP2PInfo")]
+[assembly: AssemblyTitle("Steam P2P INFO /W PingGuard")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("SteamP2PInfo")]
+[assembly: AssemblyProduct("Steam P2P INFO /W PingGuard")]
 [assembly: AssemblyCopyright("Copyright © tremwil 2022")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
