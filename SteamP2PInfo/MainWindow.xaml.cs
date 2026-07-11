@@ -253,20 +253,8 @@ namespace SteamP2PInfo
                     ConfigTab.Children.Add(configEditor);
 
                     ETWPingMonitor.Start();
-                    string gameExecutablePath;
-                    try
-                    {
-                        gameExecutablePath = Process.GetProcessById((int)wInfo.ProcessId).MainModule.FileName;
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Could not resolve the selected game's executable path, which is required for exact firewall scoping.\n\n{ex.Message}",
-                            "Firewall Setup Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        Close();
-                        return;
-                    }
-
-                    enforcementCoordinator = new P2PEnforcementCoordinator(gameExecutablePath);
+                    ETWPingMonitor.TrackProcessUdpFlows((int)wInfo.ProcessId);
+                    enforcementCoordinator = new P2PEnforcementCoordinator((int)wInfo.ProcessId);
                     enforcementCoordinator.Start();
                     timer.Change(0, 1000);
                 }

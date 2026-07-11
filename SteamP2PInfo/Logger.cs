@@ -48,5 +48,15 @@ namespace SteamP2PInfo
             CreateOrOpenLogFile();
             if (fs != null) fs.WriteLine($"[{DateTime.Now:HH:mm:ss.ff}] {message}");
         }
+
+        /// <summary>
+        /// Enforcement results must remain auditable even when general activity logging is disabled.
+        /// </summary>
+        public static void WriteEnforcementLine(string message)
+        {
+            if (Config.GameConfig.Current == null) return;
+            CreateOrOpenLogFile();
+            if (fs != null) fs.WriteLine($"[{DateTime.Now:HH:mm:ss.ff}] {message}");
+        }
     }
 }

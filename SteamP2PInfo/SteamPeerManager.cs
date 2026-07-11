@@ -12,6 +12,14 @@ using System.Reflection;
 
 namespace SteamP2PInfo
 {
+    internal enum PeerRemovalReason
+    {
+        TransportTimeout,
+        AuthSessionEnded,
+        LobbyLeft,
+        Shutdown
+    }
+
     /// <summary>
     /// Manage a list of active Steam P2P peers. The peers must be in a steam lobby with the current user to be detected.
     /// They will automatically be removed from the list if no packet was sent/recieved for a set amount of time.
@@ -43,7 +51,8 @@ namespace SteamP2PInfo
         /// </summary>
         private static Dictionary<CSteamID, SteamPeerInfo> mPeers = new Dictionary<CSteamID, SteamPeerInfo>();
 
-        public static event Action<ulong> PeerRemoved;
+        public static event Action<ulong, PeerRemovalReason> PeerRemoved;
+        public static event Action LobbyLeft;
 
         public static void Init()
         {
@@ -60,7 +69,7 @@ namespace SteamP2PInfo
         public static void Shutdown()
         {
             foreach (CSteamID steamId in mPeers.Keys.ToArray())
-                RemovePeer(steamId, "SteamP2PInfo is shutting down");
+                RemovePeer(steamId, "SteamP2PInfo is shutting down", PeerRemovalReason.Shutdown);
 
             sr?.Dispose();
             fs?.Dispose();
@@ -80,7 +89,7 @@ namespace SteamP2PInfo
                 Logger.WriteLine($"[PEER DISCONNECT] \"{peer.Name}\" (https://steamcommunity.com/profiles/{(ulong)steamId}): {reason}");
         }
 
-        private static void RemovePeer(CSteamID steamId, string reason)
+        private static void RemovePeer(CSteamID steamId, string reason, PeerRemovalReason removalReason)
         {
             if (!mPeers.TryGetValue(steamId, out SteamPeerInfo peerInfo))
                 return;
@@ -88,7 +97,7 @@ namespace SteamP2PInfo
             mPeers.Remove(steamId);
             LogDisconnect(peerInfo.peer, steamId, reason);
             peerInfo.peer?.Dispose();
-            PeerRemoved?.Invoke(steamId.m_SteamID);
+            PeerRemoved?.Invoke(steamId.m_SteamID, removalReason);
         }
 
         private static CSteamID ExtractUser(string str)
@@ -183,7 +192,8 @@ namespace SteamP2PInfo
                 else if (line.Contains("LeaveLobby"))
                 {
                     foreach (var sid in mPeers.Keys.ToArray())
-                        RemovePeer(sid, "Player left Steam lobby");
+                        RemovePeer(sid, "Player left Steam lobby", PeerRemovalReason.LobbyLeft);
+                    LobbyLeft?.Invoke();
                     continue;
                 }
                 else continue;
@@ -210,8 +220,10 @@ namespace SteamP2PInfo
                         else
                         {
                             // peer just disconnected
-                            if (mPeers.TryGetValue(steamID, out SteamPeerInfo pInfo))
-                                RemovePeer(steamID, "Auth session with peer ended");
+                            if (mPeers.ContainsKey(steamID))
+                                RemovePeer(steamID, "Auth session with peer ended", PeerRemovalReason.AuthSessionEnded);
+                            else
+                                PeerRemoved?.Invoke(steamID.m_SteamID, PeerRemovalReason.AuthSessionEnded);
                         }
                     }
                     else
@@ -237,7 +249,7 @@ namespace SteamP2PInfo
 
                 if (!isP2PConnected && sw.ElapsedMilliseconds - pInfo.lastDisconnectTimeMS > PEER_TIMEOUT_MS)
                 {
-                    RemovePeer(sid, pInfo.peer is null ? "P2P connection was not established" : "Peer disconnected from P2P session");
+                    RemovePeer(sid, pInfo.peer is null ? "P2P connection was not established" : "Peer disconnected from P2P session", PeerRemovalReason.TransportTimeout);
                 }
             }
         }

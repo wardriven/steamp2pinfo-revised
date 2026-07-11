@@ -2,11 +2,11 @@
 
 ## Goal and acceptance criteria
 
-Add an opt-in enforcement mode that disconnects a detected Steam P2P peer when a valid measured ping is strictly greater than 100 ms. Direct connections should be isolated to the peer; relayed connections may disconnect other peers sharing the same relay path, but must leave unrelated Steam services working.
+Add an opt-in enforcement mode that disconnects a detected Steam P2P peer when a valid measured ping is strictly greater than the configured per-game threshold (100 ms by default). Direct connections should be isolated to the peer; relayed connections may disconnect other peers sharing the same relay path, but must leave unrelated Steam services working.
 
 The feature is complete only when all of the following are demonstrated:
 
-1. A ping of 100 ms remains connected; the first authoritative sample above 100 ms starts enforcement.
+1. A ping equal to the configured threshold remains connected; the first authoritative sample above it starts enforcement.
 2. A direct P2P peer is blocked using rules scoped to the selected game executable, UDP, and the peer's exact remote IP and port.
 3. Steam client services and non-P2P Steam traffic continue to work while enforcement is active. Other P2P peers may be disconnected when they share the same Steam Datagram Relay path.
 4. The Steam logical session is closed after the firewall block is active, and automatic reconnection cannot bypass the block during the same auth/lobby session.
@@ -54,7 +54,9 @@ Endpoint changes must be observable so a pending rule is removed and recreated a
 
 ### 3. Windows Firewall boundary
 
-Create `IFirewallBlockService` and a production `WindowsFirewallBlockService`. Use the Windows Firewall COM API (`HNetCfg.FwPolicy2`/`HNetCfg.FWRule`) directly rather than shelling out to PowerShell.
+Implementation override after live Elden Ring validation: the exact tuple exposed to the companion process is diagnostic only. Repeated tests retained healthy exact tuple rules while the attached game's peer connection continued over another effective path. A subsequent executable + all-UDP rule pair was also ineffective because Windows' protected-executable identity filter did not match the game's traffic. Enforcement therefore enumerates UDP local ports owned exclusively by the selected game PID and blocks those ports in both directions without an application condition. Ports shared with any other process are rejected, keeping `steam.exe` ports outside the rule set. This intentionally permits disconnecting every game peer and supersedes exact-tuple/executable isolation claims below.
+
+Create `IFirewallBlockService` and a production `WindowsFirewallBlockService`. Create and read back rules through the elevated Windows NetSecurity provider. Retain `HNetCfg.FwPolicy2` for enumeration/removal, with NetSecurity removal as a compatibility fallback. This split avoids an observed Windows failure where in-process `HNetCfg.FWRule` creation returned `ERROR_FILE_NOT_FOUND` for the application even though the same policy and exact scope succeeded through NetSecurity.
 
 For each blocked direct peer, create two explicit block rules (outbound and inbound) with all of these constraints:
 
@@ -68,13 +70,13 @@ For each blocked direct peer, create two explicit block rules (outbound and inbo
 
 Do not create an address-only rule, a port-only rule, a rule for `steam.exe`, a Valve subnet/range rule, or a broad Steam port-range rule. A rule for one exact relay IP and UDP port is permitted even if multiple P2P peers share it. Explicit Windows Firewall block rules override conflicting allow rules, so executable and tuple scoping remains mandatory.
 
-The service must be idempotent, own only its named rule group, verify the created rule by reading it back, and return a structured result rather than swallowing COM errors.
+The service must be idempotent, own only its named rules, verify each created rule through the provider's rule, application, address, and port filters, and return a structured result rather than swallowing provider errors.
 
 ### 4. Enforcement order and lifecycle
 
 At attach time, resolve and canonicalize the selected process's `MainModule.FileName`, then start one serialized enforcement loop with a target cadence of 250 ms. The loop updates peer connection info and evaluates valid ping samples independently of the existing six-second IPC/log maintenance.
 
-When `Ping > 100`:
+When `Ping > configured threshold`:
 
 1. Atomically mark the peer as `EnforcementPending` so duplicate ticks cannot act.
 2. If a direct or exact observed relay endpoint exists, create and verify both block rules. A relay block may intentionally affect every peer sharing that relay tuple.
@@ -82,9 +84,9 @@ When `Ping > 100`:
 4. Keep the rules in place for the rest of that auth/lobby session, preventing immediate automatic reconnection.
 5. Log threshold, measured ping, Steam ID, endpoint classification, rule IDs, close result, and any error.
 
-If SDR is detected but no exact relay endpoint can be attributed to the game process, call the Steam close-session API, mark `Closed without firewall endpoint`, and report that firewall enforcement could not be applied. Do not substitute a Valve address range, all UDP traffic, or all Steam ports.
+If SDR is detected but no exact relay endpoint can be attributed to the game process, install a shared fallback block scoped to the selected game executable and UDP only, then call the Steam close-session API. This may disconnect every peer using that game process, but it must not target `steam.exe`, a Valve address range, or a broad Steam port range.
 
-Centralize peer removal in one method that disposes the peer and releases its rules. Call it for `EndAuthSession`, timeout, and errors; use it for every peer on `LeaveLobby`. On window close/detach, stop and await enforcement, remove all rules for the current run, then stop ETW. At application startup, remove stale rules in the SteamP2PInfo group from previous unclean exits before allowing attachment.
+Centralize peer removal in one method. For peers that were not enforced, release rules on ordinary removal. For enforced peers, ignore companion-process `EndAuthSession`, transport-timeout, and `LeaveLobby` callbacks because live testing showed that the attached game can keep or recreate its independent connection after all three signals. Retain quarantine until feature disable, game/tool exit, or startup stale-rule recovery. On window close/detach, stop and await enforcement, remove all rules for the current run, then stop ETW. At application startup, remove stale SteamP2PInfo rules from previous unclean exits before allowing attachment.
 
 ### 5. Failure policy
 
@@ -107,7 +109,7 @@ Centralize peer removal in one method that disposes the peer and releases its ru
 
 ### Automated tests
 
-- Threshold policy: `-1`, NaN, and infinity ignored; 99 and 100 allowed; 100.001 blocked.
+- Threshold policy: `-1`, NaN, and infinity ignored; values below or equal to the configured threshold are allowed; the first value above it is blocked.
 - Idempotency: repeated high samples create one rule pair and call close once.
 - Endpoint mutation: old rules are removed before rules for the new endpoint become active.
 - Peer lifecycle: all removal paths dispose the peer and release rules.
@@ -130,7 +132,7 @@ Use a small UDP sender/receiver fixture with two remote endpoints. Verify packet
 - Legacy `ISteamNetworking`, direct IPv4.
 - `SteamNetworkingMessages`, direct endpoint.
 - `SteamNetworkingMessages` through Steam Datagram Relay/no `m_addrRemote`.
-- Two simultaneous peers, with only one above 100 ms.
+- Two simultaneous peers, with only one above the configured threshold.
 - Endpoint migration while connected.
 - `EndAuthSession`, `LeaveLobby`, game exit, normal tool exit, and forced tool termination.
 

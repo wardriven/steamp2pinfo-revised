@@ -288,6 +288,7 @@
     <Compile Include="SteamPeerOldAPI.cs" />
     <Compile Include="SteamPeerManager.cs" />
     <Compile Include="WindowsFirewallBlockService.cs" />
+    <Compile Include="WfpFlowBlockService.cs" />
     <Compile Include="Settings.Designer.cs">
       <AutoGen>True</AutoGen>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
