@@ -13,6 +13,9 @@ namespace SteamP2PInfo.Config
 {
     public class GameConfig : INotifyPropertyChanged
     {
+        public const double DefaultDisconnectPingThresholdMs = 100d;
+        public const double MaximumDisconnectPingThresholdMs = 60000d;
+
         /// <summary>
         /// Name of the game process. Used to identify which config to load when attaching to a game, and to find the window.
         /// </summary>
@@ -84,16 +87,68 @@ namespace SteamP2PInfo.Config
         public bool PlaySoundOnNewSession { get; set; } = false;
 
         /// <summary>
-        /// If true, peers with a valid ping strictly greater than 100 ms are blocked and disconnected.
+        /// If true, peers with a valid ping strictly greater than the configured threshold are blocked and disconnected.
         /// </summary>
         [JsonProperty("disconnect_high_ping_enabled")]
-        [ConfigBindingElement("Disconnect peers above 100 ms", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If enabled, the first valid ping above 100 ms creates an exact UDP firewall block before closing the Steam P2P session.",
+        [ConfigBindingElement("Disconnect high-ping peers", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "If enabled, the first valid ping above the configured limit creates an exact UDP firewall block before closing the Steam P2P session.",
             UIElementProperties: new object[] {
                 new object[] { "OnContent", "Yes" },
                 new object[] { "OffContent", "No" }
             })]
         public bool DisconnectHighPingEnabled { get; set; } = false;
+
+        /// <summary>
+        /// Permit a narrowly scoped fallback when ETW proves that the exact P2P
+        /// tuple is owned by steam.exe instead of the selected game process.
+        /// </summary>
+        [JsonProperty("allow_steam_owned_exact_flow_fallback")]
+        [ConfigBindingElement("Allow Steam-owned exact-flow fallback", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "If a high-ping peer's exact UDP flow is owned by steam.exe, block only that observed local-port/remote-IP/remote-port tuple. This can affect Steam traffic sharing the same tuple.",
+            UIElementProperties: new object[] {
+                new object[] { "OnContent", "Yes" },
+                new object[] { "OffContent", "No" }
+            })]
+        public bool AllowSteamOwnedExactFlowFallback { get; set; } = false;
+
+        /// <summary>
+        /// Keep high-ping enforcement failures in the log without interrupting
+        /// play with a modal notification.
+        /// </summary>
+        [JsonProperty("mute_high_ping_enforcement_error_notifications")]
+        [ConfigBindingElement("Mute high-ping enforcement error notifications", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "If enabled, high-ping enforcement failures remain in the game log but do not show a pop-up notification.",
+            UIElementProperties: new object[] {
+                new object[] { "OnContent", "Muted" },
+                new object[] { "OffContent", "Show" }
+            })]
+        public bool MuteHighPingEnforcementErrorNotifications { get; set; } = false;
+
+        private double disconnectPingThresholdMs = DefaultDisconnectPingThresholdMs;
+
+        /// <summary>
+        /// Ping threshold in milliseconds. Enforcement triggers only when ping is strictly greater than this value.
+        /// </summary>
+        [JsonProperty("disconnect_ping_threshold_ms")]
+        [ConfigBindingElement("High-ping limit (ms)", typeof(NumericUpDown), "ValueProperty",
+            Tooltip: "Disconnect peers when the first valid ping is strictly greater than this value. The default is 100 ms.",
+            UIElementProperties: new object[] {
+                new object[] { "Minimum", 1d },
+                new object[] { "Maximum", MaximumDisconnectPingThresholdMs },
+                new object[] { "Interval", 1d },
+                new object[] { "ChangeValueOnTextChanged", true },
+                new object[] { "SnapToMultipleOfInterval", true }
+            })]
+        public double DisconnectPingThresholdMs
+        {
+            get { return disconnectPingThresholdMs; }
+            set
+            {
+                disconnectPingThresholdMs = !double.IsNaN(value) && !double.IsInfinity(value) && value > 0d && value <= MaximumDisconnectPingThresholdMs
+                    ? value
+                    : DefaultDisconnectPingThresholdMs;
+            }
+        }
 
         /// <summary>
         /// Overlay configuration for this game. Includes things like placement, enabled/disabled, etc.

@@ -16,17 +16,35 @@ The program should now be ready! You can then go in the "Config" tab to customiz
 
 ## Disconnecting high-ping peers
 
-SteamP2PInfo can automatically block and disconnect P2P peers whose ping exceeds 100 ms. This is disabled by default and can be enabled per game from the **Config** tab using **Disconnect peers above 100 ms**.
+SteamP2PInfo can automatically disconnect a peer whose measured ping exceeds a per-game limit. This feature is disabled by default. In the **Config** tab, enable **Disconnect high-ping peers** and set **High-ping limit (ms)**; the default limit is 100 ms.
 
-When enabled:
+For Elden Ring, also enable **Allow Steam-owned exact-flow fallback**. Live testing showed that the active P2P transport can be owned by `steam.exe`, rather than `eldenring.exe`. The fallback is disabled by default because it can affect Steam traffic that shares the same exact UDP flow.
 
-- Peers are evaluated by one serialized enforcement loop every 250 ms.
-- The first valid ping strictly greater than 100 ms triggers enforcement. A ping of exactly 100 ms is allowed, and unavailable or invalid measurements are ignored.
-- For a peer with an exact network endpoint, SteamP2PInfo creates inbound and outbound Windows Firewall block rules scoped to the selected game executable, UDP, and that peer's exact remote IP address and port.
-- Both firewall rules are activated and read back to verify their scope before SteamP2PInfo asks Steam to close the P2P session. A partially created rule pair is rolled back.
-- Temporary rules are removed when the peer/auth session ends, the lobby is left, the game or SteamP2PInfo exits, or the feature is disabled. Rules left by a crash are removed the next time SteamP2PInfo starts.
+### How it works
 
-The rules never target `steam.exe`, all UDP traffic, a Valve address range, or a broad Steam port range, so unrelated Steam client services are outside their application scope. Blocking a shared Steam Datagram Relay endpoint could affect multiple P2P peers, which is acceptable, but Steam does not always expose a usable relay IP/port to this companion process. When no exact endpoint is available, SteamP2PInfo can only request logical Steam-session closure and logs this as a limitation; it does not claim that Windows Firewall isolated the connection.
+1. Every 250 ms, SteamP2PInfo evaluates valid peer ping samples. The first sample strictly greater than the configured limit triggers enforcement; a ping equal to the limit is allowed. Missing, negative, `NaN`, and infinite values are ignored.
+2. The tool obtains Steam's exact remote IP/UDP-port tuple and uses ETW to confirm which local UDP port and process are actually sending packets to that tuple.
+3. It adds inbound and outbound Windows Filtering Platform (WFP) transport filters for that exact local-port/remote-IP/remote-port flow.
+4. Only after WFP accepts the filters does the companion process call Steam's logical close-session API for the peer.
+5. The filters remain active for the current tool/game lifetime, preventing an immediate reconnection. The peer is sampled again so a newly observed endpoint or local port can be added to the quarantine without issuing another close request.
+
+WFP transport filtering applies to packets in an already-active UDP flow; creating an ordinary Windows Firewall rule alone did not reliably stop this game's effective P2P path during testing. WFP filters are created in a dynamic session and are removed automatically if SteamP2PInfo exits unexpectedly. They are also removed when the feature is disabled or the tool/game closes.
+
+### Flow ownership and safety boundaries
+
+The normal path requires the observed UDP port to be owned exclusively by the selected game process. If ETW instead shows that `steam.exe` owns the exact flow, the optional Steam-owned fallback may use it only when all of the following are true:
+
+- The flow is an ETW-observed local UDP port to the peer's exact remote IP and port.
+- The observed process is `steam.exe`.
+- No other process owns that local port in the same address family at the time of enforcement.
+
+The fallback still does **not** block all Steam networking, a Valve address range, or a Steam port range. It blocks one exact network tuple. Windows can see IP addresses and ports, not Steam IDs, so any traffic sharing that tuple can be affected.
+
+An exact endpoint is required. If Steam exposes no usable remote IP/port—common with Steam Datagram Relay—the tool records an enforcement error and does not broaden the block. It also refuses a port that is shared with another process.
+
+### Notifications and logs
+
+Enforcement results are always written to the per-game log, including the peer Steam ID, measured ping, endpoint, selected flow type, and errors. **Mute high-ping enforcement error notifications** suppresses only modal pop-ups; it does not suppress log entries.
 
 # Known Issues
 ### Peers not getting detected in rare circumstances (versions < 1.2.0)
@@ -40,7 +58,7 @@ Not really an issue, but I plan to implement a GUI editor for this in the future
 
 # FAQ
 ### Why does it require administrator privileges?
-While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence in this the pings are computed by monitoring STUN packets that are sent to and recieved from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking. Administrator privileges are also required to create, verify, and remove the temporary Windows Firewall rules used by the optional high-ping disconnect feature.
+While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence in this the pings are computed by monitoring STUN packets that are sent to and recieved from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking. Administrator privileges are also required to create the temporary Windows Filtering Platform filters used by the optional high-ping disconnect feature.
 
 ### Why do I have to use the Steam console / IPC logging? Isn't there an cleaner way to monitor lobbies?
 
