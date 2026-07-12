@@ -77,6 +77,16 @@ namespace SteamP2PInfo.Config
         public bool HotkeysEnabled { get; set; } = true;
 
         /// <summary>
+        /// Optional hotkey that blocks and disconnects every currently connected peer.
+        /// A value of zero is unassigned.
+        /// </summary>
+        [JsonProperty("manual_block_hotkey")]
+        [ConfigBindingElement("Manual block all peers hotkey", typeof(HotKeyBox), "HotKeyProperty",
+            Tooltip: "While the selected game window is foreground, blocks each connected peer's exact UDP flow and then closes its Steam session. Leave unassigned to disable.",
+            ValueConverter: typeof(HotkeyConverter))]
+        public int ManualBlockHotkey { get; set; } = 0;
+
+        /// <summary>
         /// If true, a sound will be played when a new multiplayer session is detected.
         /// </summary>
         [JsonProperty("play_sound_on_new_session")]

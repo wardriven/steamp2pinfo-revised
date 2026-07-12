@@ -59,7 +59,7 @@
                         <GroupBox x:Name="ConfigCredits" Header="Credits" Margin="10 20 10 10" Padding="10">
                             <StackPanel>
                                 <TextBlock FontWeight="SemiBold">tremwil</TextBlock>
-                                <TextBlock>Bastardize by WAR_DRIVEN</TextBlock>
+                                <TextBlock>Bastardised by WAR_DRIVEN</TextBlock>
                             </StackPanel>
                         </GroupBox>
                     </StackPanel>
