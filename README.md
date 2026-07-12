@@ -1,11 +1,13 @@
-# SteamP2PInfo
+# SteamP2PInfo /w PingGuard
 Simple C# application displaying active Steam P2P connection info, namely SteamID / ping / connection quality. This was specifically made with Elden Ring in mind, but it should work for any Steam Networking game that authenticates peers using `ISteamUser::BeginAuthSession`. Also comes with a customizable overlay (**windowed / borderless mode only!**) and logging.
 
 **It also supports adding peers to the Steam recent players list, if the game does not support this.**
 ## [Releases](https://github.com/wardriven/steamp2pinfo-revised/releases)
 
 ![](https://raw.githubusercontent.com/tremwil/SteamP2PInfo/master/overlay_er.PNG)
-![](https://raw.githubusercontent.com/tremwil/SteamP2PInfo/master/gui.PNG)
+<img width="800" height="450" alt="6855270e533e1fba49393b9484607fed" src="https://github.com/user-attachments/assets/2a679b45-e9ea-4107-9acf-9092a568184a" />
+<img width="800" height="500" alt="a874f533002e86ec3df2dedead9b1eb8" src="https://github.com/user-attachments/assets/d5c7df61-8745-415e-bc94-041bc3722295" />
+
 
 # How to Use
 Download the latest release from the Releases tab and extract the ZIP file in any folder on your computer. Once the game is running, start `SteamP2PInfo.exe` and click on "Attach Game". Select the appropriate game window in the dialog. If this game has never been opened before, you will be prompted to enter the game's **Steam AppId**. This can be queried on websites like [steamdb](https://steamdb.info/). The Steam console will then open. **You must enter the following command in the console for the tool to work:**
