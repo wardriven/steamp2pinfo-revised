@@ -279,6 +279,7 @@
     <Compile Include="HotkeyManager.cs" />
     <Compile Include="OverlayTextBlock.cs" />
     <Compile Include="P2PEnforcementCoordinator.cs" />
+    <Compile Include="PeerQuarantineLifecycle.cs" />
     <Compile Include="PeerNetworkEndpoint.cs" />
     <Compile Include="OverlayWindow.xaml.cs">
       <DependentUpon>OverlayWindow.xaml</DependentUpon>
