@@ -36,6 +36,7 @@ namespace SteamP2PInfo
         private Timer timer;
         private int timerTicks = 0;
         private int overlayHotkey = 0;
+        private int manualBlockHotkey = 0;
         private int previousPeersAmount = 0;
         private P2PEnforcementCoordinator enforcementCoordinator;
 
@@ -176,6 +177,8 @@ namespace SteamP2PInfo
             if (GameConfig.Current != null) GameConfig.Current.Save();
             Settings.Default.Save();
             if (overlay != null) overlay.Close();
+            HotkeyManager.RemoveHotkey(overlayHotkey);
+            HotkeyManager.RemoveHotkey(manualBlockHotkey);
             HotkeyManager.Disable();
             ETWPingMonitor.Stop();
         }
@@ -264,6 +267,13 @@ namespace SteamP2PInfo
                     ETWPingMonitor.TrackProcessUdpFlows((int)wInfo.ProcessId);
                     enforcementCoordinator = new P2PEnforcementCoordinator((int)wInfo.ProcessId);
                     enforcementCoordinator.Start();
+                    HotkeyManager.RemoveHotkey(manualBlockHotkey);
+                    manualBlockHotkey = HotkeyManager.AddHotkey(
+                        wInfo.Handle,
+                        () => GameConfig.Current != null && GameConfig.Current.HotkeysEnabled
+                            ? GameConfig.Current.ManualBlockHotkey
+                            : 0,
+                        () => enforcementCoordinator?.BlockAllConnectedPeers());
                     timer.Change(0, 1000);
                 }
             }

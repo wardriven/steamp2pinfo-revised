@@ -77,6 +77,16 @@ namespace SteamP2PInfo.Config
         public bool HotkeysEnabled { get; set; } = true;
 
         /// <summary>
+        /// Optional hotkey that blocks and disconnects every currently connected peer.
+        /// A value of zero is unassigned.
+        /// </summary>
+        [JsonProperty("manual_block_hotkey")]
+        [ConfigBindingElement("Manual block all peers hotkey", typeof(HotKeyBox), "HotKeyProperty",
+            Tooltip: "While the selected game window is foreground, blocks each connected peer's exact UDP flow and then closes its Steam session. Leave unassigned to disable.",
+            ValueConverter: typeof(HotkeyConverter))]
+        public int ManualBlockHotkey { get; set; } = 0;
+
+        /// <summary>
         /// If true, a sound will be played when a new multiplayer session is detected.
         /// </summary>
         [JsonProperty("play_sound_on_new_session")]
@@ -92,7 +102,7 @@ namespace SteamP2PInfo.Config
         /// If true, peers with a valid ping strictly greater than the configured threshold are blocked and disconnected.
         /// </summary>
         [JsonProperty("disconnect_high_ping_enabled")]
-        [ConfigBindingElement("Disconnect high-ping peers", typeof(ToggleSwitch), "IsOnProperty",
+        [ConfigBindingElement("Automatically disconnect high-ping players", typeof(ToggleSwitch), "IsOnProperty",
             Tooltip: "If enabled, the first valid ping above the configured limit creates an exact UDP firewall block before closing the Steam P2P session.",
             UIElementProperties: new object[] {
                 new object[] { "OnContent", "Yes" },
@@ -111,7 +121,7 @@ namespace SteamP2PInfo.Config
                 new object[] { "OnContent", "Yes" },
                 new object[] { "OffContent", "No" }
             })]
-        public bool AllowSteamOwnedExactFlowFallback { get; set; } = false;
+        public bool AllowSteamOwnedExactFlowFallback { get; set; } = true;
 
         /// <summary>
         /// Keep high-ping enforcement failures in the log without interrupting

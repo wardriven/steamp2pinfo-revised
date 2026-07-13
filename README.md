@@ -18,9 +18,9 @@ The program should now be ready! You can then go in the "Config" tab to customiz
 
 ## Disconnecting high-ping peers
 
-SteamP2PInfo can automatically disconnect a peer whose measured ping exceeds a per-game limit. This feature is disabled by default. In the **Config** tab, enable **Disconnect high-ping peers** and set **High-ping limit (ms)**; the default limit is 100 ms.
+SteamP2PInfo can automatically disconnect a peer whose measured ping exceeds a per-game limit. This feature is disabled by default. In the **Config** tab, enable **Automatically disconnect high-ping players** and set **High-ping limit (ms)**; the default limit is 100 ms.
 
-For Elden Ring, also enable **Allow Steam-owned exact-flow fallback**. Live testing showed that the active P2P transport can be owned by `steam.exe`, rather than `eldenring.exe`. The fallback is disabled by default because it can affect Steam traffic that shares the same exact UDP flow.
+For Elden Ring, **Allow Steam-owned exact-flow fallback** is enabled by default. Live testing showed that the active P2P transport can be owned by `steam.exe`, rather than `eldenring.exe`. The fallback can affect Steam traffic that shares the same exact UDP flow.
 
 ### How it works
 

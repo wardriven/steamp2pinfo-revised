@@ -8,7 +8,7 @@
         xmlns:config="clr-namespace:SteamP2PInfo.Config"
         mc:Ignorable="d"
         WindowStartupLocation="CenterScreen"
-        Title="Steam P2P INFO /W PingGuard [v1.1]" Width="800" Height="450">
+        Title="Steam P2P INFO /W PingGuard [v1.2]" Width="800" Height="450">
     <mah:MetroWindow.RightWindowCommands>
         <mah:WindowCommands>
             <TextBlock VerticalAlignment="Center" Margin="0 0 10 0">           
@@ -59,7 +59,7 @@
                         <GroupBox x:Name="ConfigCredits" Header="Credits" Margin="10 20 10 10" Padding="10">
                             <StackPanel>
                                 <TextBlock FontWeight="SemiBold">tremwil</TextBlock>
-                                <TextBlock>Bastardize by WAR_DRIVEN</TextBlock>
+                                <TextBlock>Bastardised by WAR_DRIVEN</TextBlock>
                             </StackPanel>
                         </GroupBox>
                     </StackPanel>
