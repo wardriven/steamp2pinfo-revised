@@ -1,13 +1,15 @@
 # SteamP2PInfo /w PingGuard
 Simple C# application displaying active Steam P2P connection info, namely SteamID / ping / connection quality. This was specifically made with Elden Ring in mind, but it should work for any Steam Networking game that authenticates peers using `ISteamUser::BeginAuthSession`. Also comes with a customizable overlay (**windowed / borderless mode only!**) and logging.
 
+This is a fork from the original SteamP2PInfo, with the additional tweaks to allow players the choice of who they play with based of ping.
+Please check known issues, this is very much a WIP with no strict timeline for releases.
+
 **It also supports adding peers to the Steam recent players list, if the game does not support this.**
 ## [Releases](https://github.com/wardriven/steamp2pinfo-revised/releases)
 
 ![](https://raw.githubusercontent.com/tremwil/SteamP2PInfo/master/overlay_er.PNG)
 <img width="800" height="450" alt="6855270e533e1fba49393b9484607fed" src="https://github.com/user-attachments/assets/2a679b45-e9ea-4107-9acf-9092a568184a" />
 <img width="800" height="500" alt="a874f533002e86ec3df2dedead9b1eb8" src="https://github.com/user-attachments/assets/d5c7df61-8745-415e-bc94-041bc3722295" />
-
 
 # How to Use
 Download the latest release from the Releases tab and extract the ZIP file in any folder on your computer. Once the game is running, start `SteamP2PInfo.exe` and click on "Attach Game". Select the appropriate game window in the dialog. If this game has never been opened before, you will be prompted to enter the game's **Steam AppId**. This can be queried on websites like [steamdb](https://steamdb.info/). The Steam console will then open. **You must enter the following command in the console for the tool to work:**
@@ -16,7 +18,15 @@ log_ipc "BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage"
 ```
 The program should now be ready! You can then go in the "Config" tab to customize game-specific settings.
 
-## Disconnecting high-ping peers
+## Disconnecting high-ping players
+
+### Manual hotkey disconnect (preferred)
+
+For a manual, immediate disconnect, configure **Manual block hotkey** in the game's **Config** tab. Keep SteamP2PInfo attached to the game, bring the game to the foreground, and press the configured hotkey. The tool applies an exact-flow Windows Filtering Platform block and closes the Steam P2P session for the currently detected peer(s), preventing an immediate reconnection.
+
+The hotkey is configured inside the application for each game. It is the preferred way to disconnect a high-ping player when you want to act immediately rather than wait for automatic enforcement.
+
+### Automatic high-ping disconnect
 
 SteamP2PInfo can automatically disconnect a peer whose measured ping exceeds a per-game limit. This feature is disabled by default. In the **Config** tab, enable **Automatically disconnect high-ping players** and set **High-ping limit (ms)**; the default limit is 100 ms.
 
@@ -52,6 +62,12 @@ Enforcement results are always written to the per-game log, including the peer S
 ### Peers not getting detected in rare circumstances (versions < 1.2.0)
 This is due to the very naive Steam IPC log file parsing. The program can "miss" a Steam lobby, preventing the detection of P2P peers in this lobby. I plan to improve the log file parsing to make this rarer or completely eliminate it in the future.
 
+### Disconnecting low ping players
+Known bug, turn off automatical and switch to hot key.
+
+### Hotkey did not register
+Ensure that key isn't used by another program (eg: ShareX, Steam screenshot etc).
+
 ### Overlay cannot be dragged around
 I'm not sure what the cause for this is yet. Please modify the "X Offset" and "Y Offset" settings directly for now.
 
@@ -76,3 +92,4 @@ Since the tool is loaded with the game's Steam AppId, letting the program run af
 
 ### I found a bug / I have something to say about the tool
 Feel free to open an issue on this GitHub repo.
+
