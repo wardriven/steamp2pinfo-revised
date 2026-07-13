@@ -102,7 +102,7 @@ namespace SteamP2PInfo.Config
         /// If true, peers with a valid ping strictly greater than the configured threshold are blocked and disconnected.
         /// </summary>
         [JsonProperty("disconnect_high_ping_enabled")]
-        [ConfigBindingElement("Disconnect high-ping peers", typeof(ToggleSwitch), "IsOnProperty",
+        [ConfigBindingElement("Automatically disconnect high-ping players", typeof(ToggleSwitch), "IsOnProperty",
             Tooltip: "If enabled, the first valid ping above the configured limit creates an exact UDP firewall block before closing the Steam P2P session.",
             UIElementProperties: new object[] {
                 new object[] { "OnContent", "Yes" },
@@ -121,7 +121,7 @@ namespace SteamP2PInfo.Config
                 new object[] { "OnContent", "Yes" },
                 new object[] { "OffContent", "No" }
             })]
-        public bool AllowSteamOwnedExactFlowFallback { get; set; } = false;
+        public bool AllowSteamOwnedExactFlowFallback { get; set; } = true;
 
         /// <summary>
         /// Keep high-ping enforcement failures in the log without interrupting
