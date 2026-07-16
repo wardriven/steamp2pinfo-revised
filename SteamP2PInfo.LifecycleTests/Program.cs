@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.Http;
 using SteamP2PInfo;
 using SteamP2PInfo.Config;
 using Steamworks;
@@ -26,7 +27,8 @@ namespace SteamP2PInfo.LifecycleTests
                 ValidVersionFileIsParsed,
                 BlankAndMalformedVersionFilesAreRejected,
                 EqualAndOlderRemoteVersionsDoNotRequireAnUpdate,
-                NewerRemoteVersionIsComparedNumerically
+                NewerRemoteVersionIsComparedNumerically,
+                LatestVersionRequestRevalidatesAndCacheBusts
             };
 
             int failures = 0;
@@ -167,6 +169,16 @@ namespace SteamP2PInfo.LifecycleTests
         private static void NewerRemoteVersionIsComparedNumerically()
         {
             AssertTrue(VersionCheck.IsRemoteVersionNewer(new System.Version("1.2.9"), new System.Version("1.2.10")), "Version comparison must be numeric rather than lexical.");
+        }
+
+        private static void LatestVersionRequestRevalidatesAndCacheBusts()
+        {
+            using (HttpRequestMessage request = VersionCheck.CreateLatestVersionRequest("lifecycle-test"))
+            {
+                AssertEqual("/wardriven/steamp2pinfo-revised/master/version.md", request.RequestUri.AbsolutePath, "The version request must target the raw GitHub version file.");
+                AssertEqual("?cacheBust=lifecycle-test", request.RequestUri.Query, "The version request must add a cache-busting query value.");
+                AssertTrue(request.Headers.CacheControl != null && request.Headers.CacheControl.NoCache, "The version request must revalidate cached responses.");
+            }
         }
 
         private sealed class FakePeer : SteamPeerBase

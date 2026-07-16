@@ -7,6 +7,8 @@ Please check known issues, this is very much a WIP with no strict timeline for r
 **It also supports adding peers to the Steam recent players list, if the game does not support this.**
 ## [Releases](https://github.com/wardriven/steamp2pinfo-revised/releases)
 
+SteamP2PInfo checks for updates when it opens and shows a link to GitHub Releases, so you never miss improvements, fixes, or new features.
+
 ![](https://raw.githubusercontent.com/tremwil/SteamP2PInfo/master/overlay_er.PNG)
 <img width="800" height="450" alt="6855270e533e1fba49393b9484607fed" src="https://github.com/user-attachments/assets/2a679b45-e9ea-4107-9acf-9092a568184a" />
 <img width="800" height="500" alt="a874f533002e86ec3df2dedead9b1eb8" src="https://github.com/user-attachments/assets/d5c7df61-8745-415e-bc94-041bc3722295" />
