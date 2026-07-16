@@ -1,51 +1,66 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-using System.Net;
+using System;
 using System.Net.Http;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using System.IO;
+using System.Reflection;
+using System.Threading.Tasks;
 
 namespace SteamP2PInfo
 {
-    static class VersionCheck
+    internal static class VersionCheck
     {
-        public static readonly string CurrentVersion = "v1.2";
-        public static JObject LatestRelease { get; private set; }
+        internal const string ReleasesPageUrl = "https://github.com/wardriven/steamp2pinfo-revised/releases";
 
-        public static bool FetchLatest()
+        private const string LatestVersionUrl = "https://raw.githubusercontent.com/wardriven/steamp2pinfo-revised/master/version.md";
+        private static readonly HttpClient HttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+
+        internal static readonly Version CurrentVersion = GetCurrentVersion();
+
+        internal static string CurrentVersionDisplay => FormatDisplayVersion(CurrentVersion);
+
+        internal static async Task<Version> FetchLatestVersionAsync()
         {
-            string query = "https://api.github.com/repos/wardriven/steamp2pinfo-revised/releases";
-            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(query);
-            req.UserAgent = "request";
-            HttpWebResponse resp;
-
             try
             {
-                resp = (HttpWebResponse)req.GetResponse();
+                string versionText = await HttpClient.GetStringAsync(LatestVersionUrl).ConfigureAwait(false);
+                return TryParseVersion(versionText, out Version version) ? version : null;
             }
-            catch (WebException)
+            catch (Exception)
             {
-                LatestRelease = null;
-                return false;
+                return null;
             }
+        }
 
-            if (resp.StatusCode == HttpStatusCode.OK)
-            {
-                using (StreamReader reader = new StreamReader(resp.GetResponseStream()))
-                {
-                    JArray data = JArray.Parse(reader.ReadToEnd());
-                    if (data.Count != 0) LatestRelease = (JObject)data.Where(r => !(bool)r["prerelease"]).First();
-                    return data.Count != 0;
-                }
-            }
+        internal static bool TryParseVersion(string versionText, out Version version)
+        {
+            version = null;
+            return !string.IsNullOrWhiteSpace(versionText)
+                && Version.TryParse(versionText.Trim(), out version);
+        }
 
-            LatestRelease = null;
-            return false;
+        internal static bool IsRemoteVersionNewer(Version localVersion, Version remoteVersion)
+        {
+            return localVersion != null
+                && remoteVersion != null
+                && remoteVersion > localVersion;
+        }
+
+        internal static string FormatDisplayVersion(Version version)
+        {
+            if (version == null)
+                throw new ArgumentNullException(nameof(version));
+
+            return "v" + (version.Build >= 0 ? version.ToString(3) : version.ToString());
+        }
+
+        private static Version GetCurrentVersion()
+        {
+            var versionAttribute = (AssemblyFileVersionAttribute)Attribute.GetCustomAttribute(
+                Assembly.GetExecutingAssembly(),
+                typeof(AssemblyFileVersionAttribute));
+
+            if (versionAttribute == null || !TryParseVersion(versionAttribute.Version, out Version version))
+                throw new InvalidOperationException("The assembly file version must be a valid version number.");
+
+            return version;
         }
     }
 }

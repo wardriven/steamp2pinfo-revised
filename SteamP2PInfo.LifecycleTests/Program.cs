@@ -22,7 +22,11 @@ namespace SteamP2PInfo.LifecycleTests
                 ReturningPeerBelowThresholdIsNotBlocked,
                 ManualBlockHotkeyDefaultsToUnassigned,
                 ManualQuarantineSurvivesAutomaticCleanup,
-                ManualBlockWorkflowContinuesAfterPeerFailure
+                ManualBlockWorkflowContinuesAfterPeerFailure,
+                ValidVersionFileIsParsed,
+                BlankAndMalformedVersionFilesAreRejected,
+                EqualAndOlderRemoteVersionsDoNotRequireAnUpdate,
+                NewerRemoteVersionIsComparedNumerically
             };
 
             int failures = 0;
@@ -138,6 +142,31 @@ namespace SteamP2PInfo.LifecycleTests
             AssertEqual(OtherQuarantinedPeer, firewall.BlockedPeerIds[1], "A failed peer must not stop the next peer.");
             AssertEqual(1, firstPeer.CloseSessionCalls, "The first peer should still receive a CloseSession attempt after its block.");
             AssertEqual(1, secondPeer.CloseSessionCalls, "The second peer should receive a CloseSession attempt despite the first failure.");
+        }
+
+        private static void ValidVersionFileIsParsed()
+        {
+            AssertTrue(VersionCheck.TryParseVersion(" 1.2.0 \r\n", out System.Version version), "A trimmed semantic version should be accepted.");
+            AssertEqual(new System.Version("1.2.0"), version, "The parsed version should preserve all version components.");
+        }
+
+        private static void BlankAndMalformedVersionFilesAreRejected()
+        {
+            AssertFalse(VersionCheck.TryParseVersion("   ", out _), "A blank version file must be rejected.");
+            AssertFalse(VersionCheck.TryParseVersion("version 1.2.0", out _), "A malformed version file must be rejected.");
+        }
+
+        private static void EqualAndOlderRemoteVersionsDoNotRequireAnUpdate()
+        {
+            System.Version localVersion = new System.Version("1.2.0");
+
+            AssertFalse(VersionCheck.IsRemoteVersionNewer(localVersion, new System.Version("1.2.0")), "An equal remote version must not prompt for an update.");
+            AssertFalse(VersionCheck.IsRemoteVersionNewer(localVersion, new System.Version("1.1.9")), "An older remote version must not prompt for an update.");
+        }
+
+        private static void NewerRemoteVersionIsComparedNumerically()
+        {
+            AssertTrue(VersionCheck.IsRemoteVersionNewer(new System.Version("1.2.9"), new System.Version("1.2.10")), "Version comparison must be numeric rather than lexical.");
         }
 
         private sealed class FakePeer : SteamPeerBase

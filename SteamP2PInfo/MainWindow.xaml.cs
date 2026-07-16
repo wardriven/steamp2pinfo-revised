@@ -69,27 +69,44 @@ namespace SteamP2PInfo
 
             peers = new ObservableCollection<SteamPeerBase>();
             dataGridSession.DataContext = peers;
-            Title = "Steam P2P INFO /W PingGuard [" + VersionCheck.CurrentVersion + "]";
+            Title = "Steam P2P INFO /W PingGuard [" + VersionCheck.CurrentVersionDisplay + "]";
 
             timer = new Timer(Timer_Tick, null, Timeout.Infinite, Timeout.Infinite);
             Settings.Default.PropertyChanged += (s, e) => Settings.Default.Save();
 
-            Task.Run(() =>
+            StartUpdateCheck();
+        }
+
+        private void StartUpdateCheck()
+        {
+            _ = CheckForUpdatesAsync();
+        }
+
+        private async Task CheckForUpdatesAsync()
+        {
+            System.Version latestVersion = await Task.Run(() => VersionCheck.FetchLatestVersionAsync());
+            if (!VersionCheck.IsRemoteVersionNewer(VersionCheck.CurrentVersion, latestVersion))
+                return;
+
+            string latestVersionDisplay = VersionCheck.FormatDisplayVersion(latestVersion);
+            linkUpdate.NavigateUri = new Uri(VersionCheck.ReleasesPageUrl);
+            textUpdate.Text = string.Format("NEW VERSION ({0}), DOWNLOAD HERE", latestVersionDisplay);
+
+            MetroDialogSettings dialogSettings = new MetroDialogSettings
             {
-                if (VersionCheck.FetchLatest())
-                {
-                    string v = VersionCheck.LatestRelease["tag_name"].ToString();
-                    if (string.Compare(VersionCheck.CurrentVersion, v) < 0)
-                    {
-                        this.Invoke(() =>
-                        {
-                            linkUpdate.NavigateUri = new Uri("https://github.com/wardriven/steamp2pinfo-revised/releases/tag/" + v);
-                            textUpdate.Text = string.Format("NEW VERSION ({0}), DOWNLOAD HERE", v);
-                            this.ShowMessageAsync("New Version Available", string.Format("{0} is out! Click the link in the title bar to download it.", v));
-                        });
-                    }
-                }
-            });
+                ColorScheme = MetroDialogColorScheme.Accented,
+                AffirmativeButtonText = "Open Releases",
+                NegativeButtonText = "Later"
+            };
+
+            MessageDialogResult result = await this.ShowMessageAsync(
+                "New Version Available",
+                string.Format("{0} is available. You are currently using {1}.", latestVersionDisplay, VersionCheck.CurrentVersionDisplay),
+                MessageDialogStyle.AffirmativeAndNegative,
+                dialogSettings);
+
+            if (result == MessageDialogResult.Affirmative)
+                Process.Start(new ProcessStartInfo(VersionCheck.ReleasesPageUrl));
         }
 
         private void Timer_Tick(object o)
@@ -285,9 +302,9 @@ namespace SteamP2PInfo
             String startupDateString = null;
 
             // Check if the program was recently updated -- We'll want to enter the command again if so
-            if (Settings.Default.LastRunVersion != VersionCheck.CurrentVersion)
+            if (Settings.Default.LastRunVersion != VersionCheck.CurrentVersionDisplay)
             {
-                Settings.Default.LastRunVersion = VersionCheck.CurrentVersion;
+                Settings.Default.LastRunVersion = VersionCheck.CurrentVersionDisplay;
                 Settings.Default.Save();
                 return true;
             }
