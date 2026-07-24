@@ -57,6 +57,7 @@ namespace SteamP2PInfo
 
         public static void Init()
         {
+            DiagnosticLogger.Write("ACTION", "Initializing Steam peer monitoring from " + Settings.Default.SteamLogPath + ".");
             if (!sw.IsRunning)
                 sw.Start();
 
@@ -65,10 +66,12 @@ namespace SteamP2PInfo
             fsWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
             fsWatcher.Changed += (e, s) => mustReopenLog = true;
             fsWatcher.EnableRaisingEvents = true;
+            DiagnosticLogger.Write("ACTION", "Steam peer monitoring initialized.");
         }
 
         public static void Shutdown()
         {
+            DiagnosticLogger.Write("ACTION", "Steam peer monitoring shutdown started.");
             foreach (CSteamID steamId in mPeers.Keys.ToArray())
                 RemovePeer(steamId, "SteamP2PInfo is shutting down", PeerRemovalReason.Shutdown);
 
@@ -80,6 +83,7 @@ namespace SteamP2PInfo
             fsWatcher = null;
             mustReopenLog = true;
             lastPosInLog = null;
+            DiagnosticLogger.Write("ACTION", "Steam peer monitoring shutdown completed.");
         }
 
         private static void LogDisconnect(SteamPeerBase peer, CSteamID steamId, string reason)
@@ -125,14 +129,30 @@ namespace SteamP2PInfo
                     if (peer.UpdatePeerInfo())
                     {
                         Logger.WriteLine($"[PEER CONNECT] \"{peer.Name}\" (https://steamcommunity.com/profiles/{(ulong)peer.SteamID}) has connected via {peer.ConnectionTypeName}");
+                        string endpointDescription = peer.TryGetRemoteEndpoint(out PeerNetworkEndpoint endpoint)
+                            ? endpoint.ToString()
+                            : "unavailable";
+                        DiagnosticLogger.Write(
+                            "PEER",
+                            string.Format(
+                                "Connected peer {0} via {1}; endpoint {2}; ping {3:F1} ms; connection quality {4:F3}.",
+                                peer.SteamID.m_SteamID,
+                                peer.ConnectionTypeName,
+                                endpointDescription,
+                                peer.Ping,
+                                peer.ConnectionQuality));
                         if (GameConfig.Current.SetPlayedWith)
+                        {
                             SteamFriends.SetPlayedWith(player);
+                            DiagnosticLogger.Write("ACTION", "Added peer " + peer.SteamID.m_SteamID + " to Steam Recent Players.");
+                        }
 
                         return peer;
                     }
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    DiagnosticLogger.WriteException("ERROR", ex, "Failed to query peer " + player.m_SteamID + ".");
                     peer?.Dispose();
                 }
             }
@@ -163,8 +183,9 @@ namespace SteamP2PInfo
                         fs.Seek((long)lastPosInLog, SeekOrigin.Begin);
                     mustReopenLog = false;
                 }
-                catch (DirectoryNotFoundException)
+                catch (DirectoryNotFoundException ex)
                 {
+                    DiagnosticLogger.WriteException("ERROR", ex, "Steam IPC log directory was not found.");
                     MessageBox.Show("Steam IPC log file directory does not exist", "Directory Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
@@ -192,6 +213,7 @@ namespace SteamP2PInfo
                 }
                 else if (line.Contains("LeaveLobby"))
                 {
+                    DiagnosticLogger.Write("PEER", "Steam IPC reported that the local user left the lobby.");
                     foreach (var sid in mPeers.Keys.ToArray())
                         RemovePeer(sid, "Player left Steam lobby", PeerRemovalReason.LobbyLeft);
                     LobbyLeft?.Invoke();

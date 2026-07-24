@@ -20,29 +20,27 @@ log_ipc "BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage"
 ```
 The program should now be ready! You can then go in the "Config" tab to customize game-specific settings.
 
-## Disconnecting high-ping players
-
-### Manual hotkey disconnect (preferred)
+## Disconnecting peers with the manual hotkey
 
 For a manual, immediate disconnect, configure **Manual block hotkey** in the game's **Config** tab. Keep SteamP2PInfo attached to the game, bring the game to the foreground, and press the configured hotkey. The tool applies an exact-flow Windows Filtering Platform block and closes the Steam P2P session for the currently detected peer(s), preventing an immediate reconnection.
 
-The hotkey is configured inside the application for each game. It is the preferred way to disconnect a high-ping player when you want to act immediately rather than wait for automatic enforcement.
+The hotkey is configured inside the application for each game. A single press starts sustained scanning every 250 ms. The scan remains active for the full 20-second window while the current lobby is active. Afterward, it follows only the Steam IDs found during that window until those peer sessions remain absent through a brief replacement-session grace period or Steam's game-specific IPC reports `LeaveLobby`. A lobby exit ends the action immediately, including when it occurs before 20 seconds. A 60-second safety limit prevents a missed IPC event from leaving the action armed for a later lobby. If no peer is visible on the first pass, the action remains armed through the first timer scan crossing the 20-second deadline. This follows replacement peer sessions and changing UDP endpoints without relying on key repeat or requiring the hotkey to be held.
 
-### Automatic high-ping disconnect
+### Automatic high-ping disconnect removed in v1.4.0
 
-SteamP2PInfo can automatically disconnect a peer whose measured ping exceeds a per-game limit. This feature is disabled by default. In the **Config** tab, enable **Automatically disconnect high-ping players** and set **High-ping limit (ms)**; the default limit is 100 ms.
+Automatic disconnection based on a configured ping threshold has been removed and disabled in v1.4.0 due to stability and functionality constraints observed during live use. The **Automatically disconnect high-ping players** option and its automatic-only settings are no longer shown in the **Config** tab. Existing configuration files remain readable, but a legacy `disconnect_high_ping_enabled` value of `true` is ignored and saved as disabled.
 
-For Elden Ring, **Allow Steam-owned exact-flow fallback** is enabled by default. Live testing showed that the active P2P transport can be owned by `steam.exe`, rather than `eldenring.exe`. The fallback can affect Steam traffic that shares the same exact UDP flow.
+Ping remains visible so players can decide when to use the manual hotkey. For Elden Ring, **Allow Steam-owned exact-flow fallback** remains enabled by default because live testing showed that the active P2P transport can be owned by `steam.exe`, rather than `eldenring.exe`. The fallback can affect Steam traffic that shares the same exact UDP flow.
 
-### How it works
+### How manual blocking works
 
-1. Every 250 ms, SteamP2PInfo evaluates valid peer ping samples. The first sample strictly greater than the configured limit triggers enforcement; a ping equal to the limit is allowed. Missing, negative, `NaN`, and infinite values are ignored.
+1. Pressing the manual hotkey starts an immediate attempt and scans current peers every 250 ms throughout a 20-second minimum window. It can continue for the originally tracked Steam IDs until they remain absent through a two-second replacement-session grace or the game leaves that lobby, with a 60-second hard safety limit.
 2. The tool obtains Steam's exact remote IP/UDP-port tuple and uses ETW to confirm which local UDP port and process are actually sending packets to that tuple.
 3. It adds inbound and outbound Windows Filtering Platform (WFP) transport filters for that exact local-port/remote-IP/remote-port flow.
 4. Only after WFP accepts the filters does the companion process call Steam's logical close-session API for the peer.
-5. The filters remain active for the current tool/game lifetime, preventing an immediate reconnection. The peer is sampled again so a newly observed endpoint or local port can be added to the quarantine without issuing another close request. A confirmed new `BeginAuthSession` for that Steam ID clears its old filters, allowing the peer to be evaluated afresh.
+5. Successfully blocked peers remain tracked. If Steam recreates the peer object—even on the same endpoint—or migrates the transport to another UDP endpoint, the replacement session is blocked and closed as part of the same hotkey action. A failed Steam close is retried on later scans. `AuthSessionEnded`, transport timeout, and temporary peer disappearance do not stop scanning during the minimum window, and a two-second absence grace protects replacement handoffs afterward. The action ends when no tracked peer returns during that grace, the attached game's `LeaveLobby` event arrives, or the 60-second safety limit is reached. Retained filters remain active for the current tool/game lifetime.
 
-WFP transport filtering applies to packets in an already-active UDP flow; creating an ordinary Windows Firewall rule alone did not reliably stop this game's effective P2P path during testing. WFP filters are created in a dynamic session and are removed automatically if SteamP2PInfo exits unexpectedly. They are also removed when the feature is disabled or the tool/game closes.
+WFP transport filtering applies to packets in an already-active UDP flow; creating an ordinary Windows Firewall rule alone did not reliably stop this game's effective P2P path during testing. WFP filters are created in a dynamic session and are removed automatically if SteamP2PInfo exits unexpectedly or when the tool/game closes.
 
 ### Flow ownership and safety boundaries
 
@@ -58,14 +56,11 @@ An exact endpoint is required. If Steam exposes no usable remote IP/port—commo
 
 ### Notifications and logs
 
-Enforcement results are always written to the per-game log, including the peer Steam ID, measured ping, endpoint, selected flow type, and errors. **Mute high-ping enforcement error notifications** suppresses only modal pop-ups; it does not suppress log entries.
+Manual-block results are written to the per-game log, including the peer Steam ID, endpoint, selected flow type, close result, and errors.
 
 # Known Issues
 ### Peers not getting detected in rare circumstances (versions < 1.2.0)
 This is due to the very naive Steam IPC log file parsing. The program can "miss" a Steam lobby, preventing the detection of P2P peers in this lobby. I plan to improve the log file parsing to make this rarer or completely eliminate it in the future.
-
-### Disconnecting low ping players
-Known bug, turn off automatical and switch to hot key.
 
 ### Hotkey did not register
 Ensure that key isn't used by another program (eg: ShareX, Steam screenshot etc).
@@ -78,7 +73,7 @@ Not really an issue, but I plan to implement a GUI editor for this in the future
 
 # FAQ
 ### Why does it require administrator privileges?
-While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence the pings are computed by monitoring STUN packets that are sent to and received from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking. Administrator privileges are also required to create the temporary Windows Filtering Platform filters used by the optional high-ping disconnect feature.
+While the `SteamNetworkingMessages` API provides detailed connection information, the old API `SteamNetworking` does not do this. Hence the pings are computed by monitoring STUN packets that are sent to and received from the players' IPs. To capture these packets I use Event Tracing for Windows (ETW), which requires administrator privileges for "kernel" events like networking. Administrator privileges are also required to create the temporary Windows Filtering Platform filters used by the manual disconnect hotkey.
 
 ### Why do I have to use the Steam console / IPC logging? Isn't there a cleaner way to monitor lobbies?
 

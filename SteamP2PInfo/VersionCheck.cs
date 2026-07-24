@@ -26,14 +26,22 @@ namespace SteamP2PInfo
                 using (HttpResponseMessage response = await HttpClient.SendAsync(request).ConfigureAwait(false))
                 {
                     if (!response.IsSuccessStatusCode)
+                    {
+                        DiagnosticLogger.Write("ERROR", "Version check returned HTTP " + (int)response.StatusCode + " (" + response.ReasonPhrase + ").");
                         return null;
+                    }
 
                     string versionText = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    return TryParseVersion(versionText, out Version version) ? version : null;
+                    if (TryParseVersion(versionText, out Version version))
+                        return version;
+
+                    DiagnosticLogger.Write("ERROR", "Version check returned an invalid version value: " + versionText);
+                    return null;
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("ERROR", ex, "Version check failed.");
                 return null;
             }
         }

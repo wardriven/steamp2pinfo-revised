@@ -39,6 +39,7 @@ namespace SteamP2PInfo
         private int manualBlockHotkey = 0;
         private int previousPeersAmount = 0;
         private P2PEnforcementCoordinator enforcementCoordinator;
+        private GameConfig subscribedConfig;
 
         private const string STEAM_COMMAND = "log_ipc \"BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage\"";
 
@@ -53,9 +54,23 @@ namespace SteamP2PInfo
                 return;
             }
 
-            AppDomain.CurrentDomain.UnhandledException += (s, e) => ShowUnhandledException((Exception)e.ExceptionObject, "CurrentDomain", e.IsTerminating);
-            TaskScheduler.UnobservedTaskException += (s, e) => ShowUnhandledException(e.Exception, "TaskScheduler", false);
-            Dispatcher.UnhandledException += (s, e) => { if (!Debugger.IsAttached) ShowUnhandledException(e.Exception, "Dispatcher", true); };
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                Exception exception = e.ExceptionObject as Exception ?? new Exception(Convert.ToString(e.ExceptionObject));
+                DiagnosticLogger.WriteException("UNHANDLED ERROR", exception, "Unhandled CurrentDomain exception. Terminating: " + e.IsTerminating);
+                ShowUnhandledException(exception, "CurrentDomain", e.IsTerminating);
+            };
+            TaskScheduler.UnobservedTaskException += (s, e) =>
+            {
+                DiagnosticLogger.WriteException("UNHANDLED ERROR", e.Exception, "Unobserved TaskScheduler exception.");
+                ShowUnhandledException(e.Exception, "TaskScheduler", false);
+            };
+            Dispatcher.UnhandledException += (s, e) =>
+            {
+                DiagnosticLogger.WriteException("UNHANDLED ERROR", e.Exception, "Unhandled Dispatcher exception.");
+                if (!Debugger.IsAttached)
+                    ShowUnhandledException(e.Exception, "Dispatcher", true);
+            };
 
             InitializeComponent();
             Closing += MainWindow_Closed;
@@ -72,13 +87,14 @@ namespace SteamP2PInfo
             Title = "Steam P2P INFO /W PingGuard [" + VersionCheck.CurrentVersionDisplay + "]";
 
             timer = new Timer(Timer_Tick, null, Timeout.Infinite, Timeout.Infinite);
-            Settings.Default.PropertyChanged += (s, e) => Settings.Default.Save();
+            Settings.Default.PropertyChanged += Settings_PropertyChanged;
 
             StartUpdateCheck();
         }
 
         private void StartUpdateCheck()
         {
+            DiagnosticLogger.Write("ACTION", "Checking for application updates.");
             _ = CheckForUpdatesAsync();
         }
 
@@ -86,9 +102,13 @@ namespace SteamP2PInfo
         {
             System.Version latestVersion = await Task.Run(() => VersionCheck.FetchLatestVersionAsync());
             if (!VersionCheck.IsRemoteVersionNewer(VersionCheck.CurrentVersion, latestVersion))
+            {
+                DiagnosticLogger.Write("ACTION", "Update check completed; no newer release was found.");
                 return;
+            }
 
             string latestVersionDisplay = VersionCheck.FormatDisplayVersion(latestVersion);
+            DiagnosticLogger.Write("ACTION", "Update check found version " + latestVersionDisplay + ".");
             linkUpdate.NavigateUri = new Uri(VersionCheck.ReleasesPageUrl);
             textUpdate.Text = string.Format("NEW VERSION ({0}), DOWNLOAD HERE", latestVersionDisplay);
 
@@ -170,6 +190,7 @@ namespace SteamP2PInfo
 
         private void ShowUnhandledException(Exception err, string type, bool fatal)
         {
+            DiagnosticLogger.WriteException("UNHANDLED ERROR", err, string.Format("Unhandled exception source: {0}; fatal: {1}", type, fatal));
             MetroDialogSettings diagSettings = new MetroDialogSettings()
             {
                 ColorScheme = MetroDialogColorScheme.Accented,
@@ -187,6 +208,7 @@ namespace SteamP2PInfo
 
         private void MainWindow_Closed(object sender, EventArgs e)
         {
+            DiagnosticLogger.Write("ACTION", "Application shutdown started.");
             timer?.Change(Timeout.Infinite, Timeout.Infinite);
             enforcementCoordinator?.Dispose();
             enforcementCoordinator = null;
@@ -198,6 +220,69 @@ namespace SteamP2PInfo
             HotkeyManager.RemoveHotkey(manualBlockHotkey);
             HotkeyManager.Disable();
             ETWPingMonitor.Stop();
+            if (subscribedConfig != null)
+                subscribedConfig.PropertyChanged -= GameConfig_PropertyChanged;
+            Settings.Default.PropertyChanged -= Settings_PropertyChanged;
+            DiagnosticLogger.Stop("Application shutdown completed.");
+        }
+
+        private void Settings_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            Settings.Default.Save();
+            object value = string.IsNullOrWhiteSpace(e.PropertyName) ? null : Settings.Default[e.PropertyName];
+            DiagnosticLogger.WriteApplicationSetting(e.PropertyName, value);
+        }
+
+        private void SubscribeToDebugSetting()
+        {
+            if (subscribedConfig != null)
+                subscribedConfig.PropertyChanged -= GameConfig_PropertyChanged;
+
+            subscribedConfig = GameConfig.Current;
+            if (subscribedConfig == null)
+                return;
+
+            subscribedConfig.PropertyChanged += GameConfig_PropertyChanged;
+            if (subscribedConfig.DebugLoggingEnabled)
+                StartDebugLogging(false);
+        }
+
+        private void GameConfig_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (!string.Equals(e.PropertyName, nameof(GameConfig.DebugLoggingEnabled), StringComparison.Ordinal))
+                return;
+
+            if (GameConfig.Current.DebugLoggingEnabled)
+                StartDebugLogging(true);
+            else
+                DiagnosticLogger.Stop("Debug logging disabled in the configuration.");
+        }
+
+        private void StartDebugLogging(bool showWarning)
+        {
+            if (showWarning)
+            {
+                MessageBox.Show(
+                    "Debug logging should only be enabled while reproducing an issue for a GitHub bug report. " +
+                    "The log includes application settings, Steam IDs, peer network endpoints, firewall activity, and hotkey presses. " +
+                    "A new file will be created in the logs\\debug folder. Review it before sharing it publicly and turn debug logging off when you are finished.",
+                    "Debug Logging for Bug Reports",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            if (DiagnosticLogger.TryStartNewSession(GameConfig.Current, out string logPath, out string error))
+            {
+                DiagnosticLogger.Write("ACTION", "A new debug session was started for the selected game. Log file: " + logPath);
+                return;
+            }
+
+            MessageBox.Show(
+                "Debug logging could not be started:\n\n" + error,
+                "Debug Logging Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            GameConfig.Current.DebugLoggingEnabled = false;
         }
 
 
@@ -219,10 +304,20 @@ namespace SteamP2PInfo
                 WindowSelectDialog dialog = new WindowSelectDialog() { Owner = this };
                 if (dialog.ShowDialog() == true)
                 {
-                    GameConfig.LoadOrCreate(dialog.SelectedWindow.ProcessName);
+                    bool newConfigCreated = GameConfig.LoadOrCreate(dialog.SelectedWindow.ProcessName);
+                    SubscribeToDebugSetting();
+                    DiagnosticLogger.Write(
+                        "ACTION",
+                        string.Format(
+                            "Selected game window '{0}' (process {1}, PID {2}); configuration {3}.",
+                            dialog.SelectedWindow.Title,
+                            dialog.SelectedWindow.ProcessName,
+                            dialog.SelectedWindow.ProcessId,
+                            newConfigCreated ? "created" : "loaded"));
 
                     if (!Directory.Exists(System.IO.Path.GetDirectoryName(Settings.Default.SteamLogPath)))
                     {
+                        DiagnosticLogger.Write("ERROR", "Steam IPC log file directory does not exist: " + Settings.Default.SteamLogPath);
                         MessageBox.Show("Steam IPC log file directory does not exist. Please modify the config accordingly.", "Directory Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
                         return;
                     }
@@ -232,6 +327,7 @@ namespace SteamP2PInfo
                         string input = Microsoft.VisualBasic.Interaction.InputBox("Please enter the Steam App ID to use with this game:", "Steam App ID Required");
                         if (!uint.TryParse(input, out uint result))
                         {
+                            DiagnosticLogger.Write("ERROR", "A valid numeric Steam App ID was not supplied.");
                             MessageBox.Show("Please input a valid number", "Input Error", MessageBoxButton.OK, MessageBoxImage.Error);
                             return;
                         }
@@ -241,6 +337,7 @@ namespace SteamP2PInfo
                     Environment.SetEnvironmentVariable("SteamAppId", GameConfig.Current.SteamAppId.ToString());
                     if (!SteamAPI.Init())
                     {
+                        DiagnosticLogger.Write("ERROR", "Steam API initialization failed for App ID " + GameConfig.Current.SteamAppId + ".");
                         MessageBox.Show("Could not initialize Steam API. Make sure the provided AppId is valid!", "Steam API Error", MessageBoxButton.OK, MessageBoxImage.Error);
                         GameConfig.Current.SteamAppId = 0;
                         GameConfig.Current.Save();
@@ -248,6 +345,7 @@ namespace SteamP2PInfo
                     }
 
                     wInfo = dialog.SelectedWindow;
+                    DiagnosticLogger.Write("ACTION", "Steam API initialized successfully.");
                     SteamPeerManager.Init();
 
                     if(MustEnterSteamCommand())
@@ -260,6 +358,7 @@ namespace SteamP2PInfo
                     overlay.dataGrid.DataContext = peers;
                     if (!overlay.InstallMsgHook())
                     {
+                        DiagnosticLogger.Write("ERROR", "Failed to install the overlay window message hook.");
                         overlay.Close();
                         MessageBox.Show("Failed to setup overlay message hook", "WINAPI Error", MessageBoxButton.OK, MessageBoxImage.Error);
                         Close();
@@ -282,8 +381,10 @@ namespace SteamP2PInfo
 
                     ETWPingMonitor.Start();
                     ETWPingMonitor.TrackProcessUdpFlows((int)wInfo.ProcessId);
+                    DiagnosticLogger.Write("ACTION", "ETW UDP monitoring started for PID " + wInfo.ProcessId + ".");
                     enforcementCoordinator = new P2PEnforcementCoordinator((int)wInfo.ProcessId);
                     enforcementCoordinator.Start();
+                    DiagnosticLogger.Write("ACTION", "P2P enforcement monitoring started.");
                     HotkeyManager.RemoveHotkey(manualBlockHotkey);
                     manualBlockHotkey = HotkeyManager.AddHotkey(
                         wInfo.Handle,
@@ -316,8 +417,9 @@ namespace SteamP2PInfo
             {
                 ipcLogDate = File.GetLastWriteTime(Settings.Default.SteamLogPath);
 
-            } catch (Exception)
+            } catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("ERROR", ex, "Could not read the Steam IPC log timestamp.");
                 return true;
             }
 
@@ -352,8 +454,9 @@ namespace SteamP2PInfo
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("ERROR", ex, "Could not inspect the Steam bootstrap log.");
                 return true;
             }
 
@@ -383,6 +486,7 @@ namespace SteamP2PInfo
                 }
                 catch (Exception e)
                 {
+                    DiagnosticLogger.WriteException("ERROR", e, "Failed to copy the Steam console command to the clipboard.");
                     MessageBox.Show($"Failed to copy command to clipboard. Please enter '{STEAM_COMMAND}' manually.\n\n {e}", "Write to Clipboard Failed!", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }

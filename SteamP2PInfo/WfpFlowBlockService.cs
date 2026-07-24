@@ -54,6 +54,7 @@ namespace SteamP2PInfo
         public WfpFlowBlockService(int gameProcessId)
         {
             this.gameProcessId = gameProcessId;
+            DiagnosticLogger.Write("FIREWALL", "Attempting to open a dynamic WFP session for game PID " + gameProcessId + ".");
             IntPtr sessionName = Marshal.StringToHGlobalUni("SteamP2PInfo experimental WFP flow session");
             try
             {
@@ -100,6 +101,7 @@ namespace SteamP2PInfo
             {
                 Marshal.FreeHGlobal(subLayerName);
             }
+            DiagnosticLogger.Write("FIREWALL", "Dynamic WFP session and sublayer created successfully.");
         }
 
         /// <summary>
@@ -170,6 +172,7 @@ namespace SteamP2PInfo
             }
             catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed while identifying and blocking the peer's exact UDP flow.");
                 return FirewallBlockResult.Failed(ex.Message);
             }
         }
@@ -190,6 +193,7 @@ namespace SteamP2PInfo
             }
             catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed while blocking game-owned UDP ports.");
                 return FirewallBlockResult.Failed(ex.Message);
             }
         }
@@ -211,6 +215,14 @@ namespace SteamP2PInfo
                 .ToArray();
             if (sockets.Length == 0)
                 return FirewallBlockResult.Failed("No local UDP ports were supplied for the flow.");
+
+            DiagnosticLogger.Write(
+                "FIREWALL",
+                string.Format(
+                    "Attempting WFP block for peer {0}; endpoint {1}; local UDP socket(s): {2}.",
+                    steamId,
+                    endpoint == null ? "any" : endpoint.ToString(),
+                    string.Join(", ", sockets.Select(socket => socket.AddressFamily + ":" + socket.LocalPort))));
 
             if (!peerFilters.TryGetValue(steamId, out PeerFilterSet peerFilterSet))
                 peerFilterSet = new PeerFilterSet();
@@ -237,10 +249,14 @@ namespace SteamP2PInfo
                 foreach (string scope in createdScopes)
                     peerFilterSet.Scopes.Add(scope);
                 peerFilters[steamId] = peerFilterSet;
+                DiagnosticLogger.Write(
+                    "FIREWALL",
+                    string.Format("Created {0} WFP filter(s) successfully for peer {1}: {2}.", created.Count, steamId, string.Join(", ", created)));
                 return FirewallBlockResult.Ok();
             }
             catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed to create WFP filters for peer " + steamId + ".");
                 foreach (ulong id in created)
                     TryDeleteFilter(id);
                 return FirewallBlockResult.Failed(ex.Message);
@@ -269,6 +285,7 @@ namespace SteamP2PInfo
                 return;
 
             disposed = true;
+            DiagnosticLogger.Write("FIREWALL", "Disposing the dynamic WFP session and all remaining filters.");
             RemoveAll();
             try
             {
@@ -281,6 +298,15 @@ namespace SteamP2PInfo
 
         private ulong AddFilter(ulong steamId, PeerNetworkEndpoint endpoint, GameUdpSocket socket, bool inbound)
         {
+            string direction = inbound ? "inbound" : "outbound";
+            DiagnosticLogger.Write(
+                "FIREWALL",
+                string.Format(
+                    "Attempting to create {0} WFP filter for peer {1}; local UDP {2}; remote {3}.",
+                    direction,
+                    steamId,
+                    socket.LocalPort,
+                    endpoint == null ? "any" : endpoint.ToString()));
             var conditions = new List<FwpmFilterCondition0>
             {
                 CreateScalarCondition(ConditionIpProtocol, FwpDataTypeUint8, 17),
@@ -321,6 +347,9 @@ namespace SteamP2PInfo
                 ThrowIfFailed(
                     FwpmFilterAdd0(engine, ref filter, IntPtr.Zero, out ulong filterId),
                     "add WFP flow filter");
+                DiagnosticLogger.Write(
+                    "FIREWALL",
+                    string.Format("Created {0} WFP filter {1} successfully for peer {2}.", direction, filterId, steamId));
                 return filterId;
             }
             finally
@@ -562,7 +591,18 @@ namespace SteamP2PInfo
 
         private void TryDeleteFilter(ulong filterId)
         {
-            try { FwpmFilterDeleteById0(engine, filterId); } catch { }
+            try
+            {
+                uint status = FwpmFilterDeleteById0(engine, filterId);
+                if (status == 0)
+                    DiagnosticLogger.Write("FIREWALL", "Removed WFP filter " + filterId + " successfully.");
+                else
+                    DiagnosticLogger.Write("FIREWALL ERROR", string.Format("Could not remove WFP filter {0}; status 0x{1:X8}.", filterId, status));
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Could not remove WFP filter " + filterId + ".");
+            }
         }
 
         private static void ThrowIfFailed(uint status, string operation)

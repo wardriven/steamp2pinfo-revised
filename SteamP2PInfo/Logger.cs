@@ -37,6 +37,7 @@ namespace SteamP2PInfo
 
         public static void Write(string message)
         {
+            DiagnosticLogger.Write("ACTIVITY", message);
             if (Config.GameConfig.Current == null || !Config.GameConfig.Current.LogActivity) return;
             CreateOrOpenLogFile();
             if (fs != null) fs.Write($"[{DateTime.Now:HH:mm:ss.ff}] {message}");
@@ -44,6 +45,7 @@ namespace SteamP2PInfo
 
         public static void WriteLine(string message)
         {
+            DiagnosticLogger.Write("ACTIVITY", message);
             if (Config.GameConfig.Current == null || !Config.GameConfig.Current.LogActivity) return;
             CreateOrOpenLogFile();
             if (fs != null) fs.WriteLine($"[{DateTime.Now:HH:mm:ss.ff}] {message}");
@@ -54,6 +56,7 @@ namespace SteamP2PInfo
         /// </summary>
         public static void WriteEnforcementLine(string message)
         {
+            DiagnosticLogger.Write("ENFORCEMENT", message);
             if (Config.GameConfig.Current == null) return;
             CreateOrOpenLogFile();
             if (fs != null) fs.WriteLine($"[{DateTime.Now:HH:mm:ss.ff}] {message}");
