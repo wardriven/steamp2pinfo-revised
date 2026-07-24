@@ -64,6 +64,30 @@ namespace SteamP2PInfo.Config
             })]
         public bool LogActivity { get; set; } = false;
 
+        private bool debugLoggingEnabled;
+
+        /// <summary>
+        /// Enables verbose, session-scoped diagnostics intended to accompany a GitHub bug report.
+        /// </summary>
+        [JsonIgnore]
+        [ConfigBindingElement("Enable debug logging", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "Creates a new detailed support log containing actions, errors, peer connections, firewall activity, settings, and hotkey presses. This setting is not saved and must be enabled again for each application session.",
+            UIElementProperties: new object[] {
+                new object[] { "OnContent", "Enabled" },
+                new object[] { "OffContent", "Disabled" }
+            })]
+        public bool DebugLoggingEnabled
+        {
+            get { return debugLoggingEnabled; }
+            set
+            {
+                if (debugLoggingEnabled == value)
+                    return;
+
+                debugLoggingEnabled = value;
+            }
+        }
+
         /// <summary>
         /// If true, the hotkey system will be enabled while attached to this game.
         /// </summary>
@@ -99,16 +123,15 @@ namespace SteamP2PInfo.Config
         public bool PlaySoundOnNewSession { get; set; } = false;
 
         /// <summary>
-        /// If true, peers with a valid ping strictly greater than the configured threshold are blocked and disconnected.
+        /// Legacy v1.3 setting retained so existing configuration files remain
+        /// readable. Automatic high-ping disconnection was removed in v1.4.
         /// </summary>
         [JsonProperty("disconnect_high_ping_enabled")]
-        [ConfigBindingElement("Automatically disconnect high-ping players", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If enabled, the first valid ping above the configured limit creates an exact UDP firewall block before closing the Steam P2P session.",
-            UIElementProperties: new object[] {
-                new object[] { "OnContent", "Yes" },
-                new object[] { "OffContent", "No" }
-            })]
-        public bool DisconnectHighPingEnabled { get; set; } = false;
+        public bool DisconnectHighPingEnabled
+        {
+            get { return false; }
+            set { }
+        }
 
         /// <summary>
         /// Permit a narrowly scoped fallback when ETW proves that the exact P2P
@@ -116,7 +139,7 @@ namespace SteamP2PInfo.Config
         /// </summary>
         [JsonProperty("allow_steam_owned_exact_flow_fallback")]
         [ConfigBindingElement("Allow Steam-owned exact-flow fallback", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If a high-ping peer's exact UDP flow is owned by steam.exe, block only that observed local-port/remote-IP/remote-port tuple. This can affect Steam traffic sharing the same tuple.",
+            Tooltip: "If a manually blocked peer's exact UDP flow is owned by steam.exe, block only that observed local-port/remote-IP/remote-port tuple. This can affect Steam traffic sharing the same tuple.",
             UIElementProperties: new object[] {
                 new object[] { "OnContent", "Yes" },
                 new object[] { "OffContent", "No" }
@@ -124,33 +147,19 @@ namespace SteamP2PInfo.Config
         public bool AllowSteamOwnedExactFlowFallback { get; set; } = true;
 
         /// <summary>
-        /// Keep high-ping enforcement failures in the log without interrupting
-        /// play with a modal notification.
+        /// Legacy automatic-enforcement setting retained for configuration-file
+        /// compatibility. It is no longer exposed in the v1.4 config UI.
         /// </summary>
         [JsonProperty("mute_high_ping_enforcement_error_notifications")]
-        [ConfigBindingElement("Mute high-ping enforcement error notifications", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If enabled, high-ping enforcement failures remain in the game log but do not show a pop-up notification.",
-            UIElementProperties: new object[] {
-                new object[] { "OnContent", "Muted" },
-                new object[] { "OffContent", "Show" }
-            })]
         public bool MuteHighPingEnforcementErrorNotifications { get; set; } = false;
 
         private double disconnectPingThresholdMs = DefaultDisconnectPingThresholdMs;
 
         /// <summary>
-        /// Ping threshold in milliseconds. Enforcement triggers only when ping is strictly greater than this value.
+        /// Legacy automatic-enforcement threshold retained for configuration-file
+        /// compatibility. It is no longer exposed in the v1.4 config UI.
         /// </summary>
         [JsonProperty("disconnect_ping_threshold_ms")]
-        [ConfigBindingElement("High-ping limit (ms)", typeof(NumericUpDown), "ValueProperty",
-            Tooltip: "Disconnect peers when the first valid ping is strictly greater than this value. The default is 100 ms.",
-            UIElementProperties: new object[] {
-                new object[] { "Minimum", 1d },
-                new object[] { "Maximum", MaximumDisconnectPingThresholdMs },
-                new object[] { "Interval", 1d },
-                new object[] { "ChangeValueOnTextChanged", true },
-                new object[] { "SnapToMultipleOfInterval", true }
-            })]
         public double DisconnectPingThresholdMs
         {
             get { return disconnectPingThresholdMs; }
@@ -174,7 +183,9 @@ namespace SteamP2PInfo.Config
         /// </summary>
         public static GameConfig Current { get; private set; }
 
+#pragma warning disable CS0067
         public event PropertyChangedEventHandler PropertyChanged;
+#pragma warning restore CS0067
 
         /// <summary>
         /// Load a settings file as the current game settings, or create a new file if the game does not have associated settings yet.
@@ -208,6 +219,7 @@ namespace SteamP2PInfo.Config
         {
             string json = JsonConvert.SerializeObject(Current, Formatting.Indented);
             File.WriteAllText($"config\\{Current.ProcessName}.json", json);
+            DiagnosticLogger.WriteSettingsIfChanged(Current, "Settings changed");
         }
     }
 }

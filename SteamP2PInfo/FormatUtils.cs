@@ -19,8 +19,9 @@ namespace SteamP2PInfo
             {
                 return string.Format(fmt, args);
             }
-            catch (FormatException)
+            catch (FormatException ex)
             {
+                DiagnosticLogger.WriteException("ERROR", ex, "Overlay text format failed: " + fmt);
                 return "[FORMAT ERROR]";
             }
         }

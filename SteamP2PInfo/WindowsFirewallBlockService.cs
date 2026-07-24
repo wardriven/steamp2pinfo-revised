@@ -63,6 +63,7 @@ namespace SteamP2PInfo
             this.gameProcessId = gameProcessId;
             Type policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2", true);
             policy = Activator.CreateInstance(policyType);
+            DiagnosticLogger.Write("FIREWALL", "Initialized Windows Firewall rule service for PID " + gameProcessId + " and executable " + this.executablePath + ".");
         }
 
         public static string RemoveStaleRules()
@@ -124,12 +125,15 @@ namespace SteamP2PInfo
 
             try
             {
+                DiagnosticLogger.Write("FIREWALL", "Attempting to create game-owned UDP port rules " + outboundName + " and " + inboundName + " for peer " + steamId + ".");
                 AddGamePortRulePairWithPowerShell(outboundName, inboundName);
                 peerRuleNames.Add(steamId, names);
+                DiagnosticLogger.Write("FIREWALL", "Created Windows Firewall rules successfully: " + string.Join(", ", names) + ".");
                 return FirewallBlockResult.Ok();
             }
             catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed to create game-owned UDP port rules for peer " + steamId + ".");
                 foreach (string name in names)
                     TryRemoveRule(name);
                 return FirewallBlockResult.Failed(ex.Message);
@@ -157,6 +161,7 @@ namespace SteamP2PInfo
             }
             catch (Exception ex)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed to create exact endpoint rules for peer " + steamId + ".");
                 foreach (string name in createdNames)
                     TryRemoveRule(name);
                 return FirewallBlockResult.Failed(ex.Message);
@@ -197,11 +202,22 @@ namespace SteamP2PInfo
                 ? "Temporary high-latency shared-relay UDP block created by SteamP2PInfo"
                 : "Temporary high-latency Steam P2P block created by SteamP2PInfo";
 
+            DiagnosticLogger.Write(
+                "FIREWALL",
+                string.Format(
+                    "Attempting to create Windows Firewall rule {0}; direction {1}; executable {2}; UDP remote {3}:{4}.",
+                    name,
+                    direction == DirectionInbound ? "inbound" : "outbound",
+                    executablePath,
+                    remoteAddress,
+                    remotePort));
+
             // On some Windows installations the in-process HNetCfg add operation records
             // an attempted rule but returns ERROR_FILE_NOT_FOUND when SteamP2PInfo is the
             // modifying application. NetSecurity uses the same Windows Firewall policy
             // store through its supported provider and is then independently read back below.
             AddRuleWithPowerShell(name, description, direction, remoteAddress, remotePort);
+            DiagnosticLogger.Write("FIREWALL", "Created and verified Windows Firewall rule successfully: " + name + ".");
         }
 
         private void TryRemoveRule(string name)
@@ -209,15 +225,19 @@ namespace SteamP2PInfo
             try
             {
                 policy.Rules.Remove(name);
+                DiagnosticLogger.Write("FIREWALL", "Removed Windows Firewall rule successfully: " + name + ".");
             }
-            catch
+            catch (Exception comException)
             {
+                DiagnosticLogger.WriteException("FIREWALL ERROR", comException, "In-process removal failed for rule " + name + "; attempting PowerShell fallback.");
                 try
                 {
                     RemoveRuleWithPowerShell(name);
+                    DiagnosticLogger.Write("FIREWALL", "Removed Windows Firewall rule with PowerShell: " + name + ".");
                 }
-                catch
+                catch (Exception ex)
                 {
+                    DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Could not remove Windows Firewall rule " + name + ".");
                     // Startup stale-rule cleanup is the final recovery path after removal failures.
                 }
             }
