@@ -9,6 +9,7 @@ using System.Windows;
 using System.Diagnostics;
 using System;
 using System.Reflection;
+using System.Threading;
 
 namespace SteamP2PInfo
 {
@@ -32,6 +33,10 @@ namespace SteamP2PInfo
         private static bool mustReopenLog = true;
         private static long? lastPosInLog = null;
         private static Stopwatch sw = new Stopwatch();
+        private static PeerConnectionHistoryTracker historyTracker;
+        private static long updateCycleId;
+        private static int updateInProgress;
+        private static volatile bool isShuttingDown;
 
         private static readonly Regex STEAMID3_REGEX = new Regex(@"\[U:1:(?<id>\d+)\]", RegexOptions.Compiled);
         private const long STEAMID64_BASE = 0x0110_0001_0000_0000;
@@ -55,9 +60,11 @@ namespace SteamP2PInfo
         public static event Action<ulong> PeerBeginAuthSession;
         public static event Action LobbyLeft;
 
-        public static void Init()
+        public static void Init(PeerConnectionHistoryTracker peerHistoryTracker = null)
         {
             DiagnosticLogger.Write("ACTION", "Initializing Steam peer monitoring from " + Settings.Default.SteamLogPath + ".");
+            historyTracker = peerHistoryTracker;
+            isShuttingDown = false;
             if (!sw.IsRunning)
                 sw.Start();
 
@@ -72,6 +79,7 @@ namespace SteamP2PInfo
         public static void Shutdown()
         {
             DiagnosticLogger.Write("ACTION", "Steam peer monitoring shutdown started.");
+            isShuttingDown = true;
             foreach (CSteamID steamId in mPeers.Keys.ToArray())
                 RemovePeer(steamId, "SteamP2PInfo is shutting down", PeerRemovalReason.Shutdown);
 
@@ -83,6 +91,7 @@ namespace SteamP2PInfo
             fsWatcher = null;
             mustReopenLog = true;
             lastPosInLog = null;
+            historyTracker = null;
             DiagnosticLogger.Write("ACTION", "Steam peer monitoring shutdown completed.");
         }
 
@@ -100,9 +109,71 @@ namespace SteamP2PInfo
                 return;
 
             mPeers.Remove(steamId);
-            LogDisconnect(peerInfo.peer, steamId, reason);
-            peerInfo.peer?.Dispose();
-            PeerRemoved?.Invoke(steamId.m_SteamID, removalReason);
+            FinalizePeerRemoval(
+                peerInfo,
+                steamId,
+                removalReason,
+                historyTracker,
+                PeerRemoved,
+                () => LogDisconnect(peerInfo.peer, steamId, reason));
+        }
+
+        internal static void FinalizePeerRemoval(
+            SteamPeerInfo peerInfo,
+            CSteamID steamId,
+            PeerRemovalReason removalReason,
+            PeerConnectionHistoryTracker peerHistoryTracker,
+            Action<ulong, PeerRemovalReason> peerRemovedCallback,
+            Action disconnectLogAction = null)
+        {
+            try
+            {
+                string historyError = null;
+                if (peerHistoryTracker != null)
+                    peerHistoryTracker.Complete(steamId.m_SteamID, out historyError);
+                if (!string.IsNullOrWhiteSpace(historyError))
+                    DiagnosticLogger.Write("ERROR", "Could not save connection history for peer " + steamId.m_SteamID + ": " + historyError);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    DiagnosticLogger.WriteException("ERROR", ex, "Could not finalize connection history for peer " + steamId.m_SteamID + ".");
+                }
+                catch
+                {
+                }
+            }
+
+            try
+            {
+                disconnectLogAction?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    DiagnosticLogger.WriteException("ERROR", ex, "Could not write the disconnect log for peer " + steamId.m_SteamID + ".");
+                }
+                catch
+                {
+                }
+            }
+
+            peerInfo?.peer?.Dispose();
+            peerRemovedCallback?.Invoke(steamId.m_SteamID, removalReason);
+        }
+
+        private static void TryObserveHistory(SteamPeerBase peer, long cycleId)
+        {
+            try
+            {
+                historyTracker?.Observe(peer, cycleId);
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLogger.WriteException("ERROR", ex, "Could not observe connection history for peer " + peer?.SteamID.m_SteamID + ".");
+            }
         }
 
         private static CSteamID ExtractUser(string str)
@@ -118,7 +189,7 @@ namespace SteamP2PInfo
             }
         }
 
-        private static SteamPeerBase GetPeer(CSteamID player)
+        private static SteamPeerBase GetPeer(CSteamID player, long cycleId)
         {
             SteamPeerBase peer = null;
             foreach (var factory in PEER_FACTORIES)
@@ -147,6 +218,7 @@ namespace SteamP2PInfo
                             DiagnosticLogger.Write("ACTION", "Added peer " + peer.SteamID.m_SteamID + " to Steam Recent Players.");
                         }
 
+                        TryObserveHistory(peer, cycleId);
                         return peer;
                     }
                 }
@@ -161,124 +233,150 @@ namespace SteamP2PInfo
 
         public async static void UpdatePeerList()
         {
-            // Make sure we're constantly writing to the IPC log to force Steam to eventually flush
-            // This call was chosen because it's not something a game will call often
-            // Thus we avoid blowing up the IPC log with dummy calls
-            SteamFriends.SendClanChatMessage(new CSteamID(0), "");
+            if (isShuttingDown || Interlocked.CompareExchange(ref updateInProgress, 1, 0) != 0)
+                return;
 
-            if (mustReopenLog)
+            long cycleId = Interlocked.Increment(ref updateCycleId);
+            try
             {
-                sr?.Dispose();
-                fs?.Close();
-                fs?.Dispose();
+                // Make sure we're constantly writing to the IPC log to force Steam to eventually flush
+                // This call was chosen because it's not something a game will call often
+                // Thus we avoid blowing up the IPC log with dummy calls
+                SteamFriends.SendClanChatMessage(new CSteamID(0), "");
 
-                try
+                if (mustReopenLog)
                 {
-                    fs = new FileStream(Settings.Default.SteamLogPath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
-                    sr = new StreamReader(fs);
-                    // If the file had to be reopened, read from the last position we were at before
-                    if (lastPosInLog is null)
-                        fs.Seek(0, SeekOrigin.End);
-                    else
-                        fs.Seek((long)lastPosInLog, SeekOrigin.Begin);
-                    mustReopenLog = false;
-                }
-                catch (DirectoryNotFoundException ex)
-                {
-                    DiagnosticLogger.WriteException("ERROR", ex, "Steam IPC log directory was not found.");
-                    MessageBox.Show("Steam IPC log file directory does not exist", "Directory Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-            }
+                    sr?.Dispose();
+                    fs?.Close();
+                    fs?.Dispose();
 
-            while (!mustReopenLog)
-            {
-                string line = await sr.ReadLineAsync();
-                if (line == null)
-                {
-                    lastPosInLog = fs.Position;
-                    break;
-                }
-
-                if (!line.Contains(GameConfig.Current.ProcessName))
-                    continue;
-
-                bool begin;
-                if (line.Contains("BeginAuthSession"))
-                {
-                    begin = true;
-                }
-                else if (line.Contains("EndAuthSession"))
-                {
-                    begin = false;
-                }
-                else if (line.Contains("LeaveLobby"))
-                {
-                    DiagnosticLogger.Write("PEER", "Steam IPC reported that the local user left the lobby.");
-                    foreach (var sid in mPeers.Keys.ToArray())
-                        RemovePeer(sid, "Player left Steam lobby", PeerRemovalReason.LobbyLeft);
-                    LobbyLeft?.Invoke();
-                    continue;
-                }
-                else continue;
-
-                CSteamID steamID = ExtractUser(line);
-
-                if (steamID.m_SteamID != 0)
-                {
-                    if (steamID.BIndividualAccount())
+                    try
                     {
-                        if (begin)
-                        {
-                            if (!mPeers.TryGetValue(steamID, out SteamPeerInfo peer))
-                            {
-                                // This is a genuinely new manager entry. Notify
-                                // enforcement before GetPeer can accept or the
-                                // timer can evaluate the returning session.
-                                PeerBeginAuthSession?.Invoke(steamID.m_SteamID);
+                        fs = new FileStream(Settings.Default.SteamLogPath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
+                        sr = new StreamReader(fs);
+                        // If the file had to be reopened, read from the last position we were at before
+                        if (lastPosInLog is null)
+                            fs.Seek(0, SeekOrigin.End);
+                        else
+                            fs.Seek((long)lastPosInLog, SeekOrigin.Begin);
+                        mustReopenLog = false;
+                    }
+                    catch (DirectoryNotFoundException ex)
+                    {
+                        DiagnosticLogger.WriteException("ERROR", ex, "Steam IPC log directory was not found.");
+                        MessageBox.Show("Steam IPC log file directory does not exist", "Directory Not Found", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
 
-                                var newPeerInfo = new SteamPeerInfo(GetPeer(steamID));
-                                if (newPeerInfo.peer is null)
+                while (!mustReopenLog && !isShuttingDown)
+                {
+                    string line = await sr.ReadLineAsync();
+                    if (isShuttingDown)
+                        return;
+
+                    if (line == null)
+                    {
+                        lastPosInLog = fs.Position;
+                        break;
+                    }
+
+                    if (!line.Contains(GameConfig.Current.ProcessName))
+                        continue;
+
+                    bool begin;
+                    if (line.Contains("BeginAuthSession"))
+                    {
+                        begin = true;
+                    }
+                    else if (line.Contains("EndAuthSession"))
+                    {
+                        begin = false;
+                    }
+                    else if (line.Contains("LeaveLobby"))
+                    {
+                        DiagnosticLogger.Write("PEER", "Steam IPC reported that the local user left the lobby.");
+                        foreach (var sid in mPeers.Keys.ToArray())
+                            RemovePeer(sid, "Player left Steam lobby", PeerRemovalReason.LobbyLeft);
+                        LobbyLeft?.Invoke();
+                        continue;
+                    }
+                    else continue;
+
+                    CSteamID steamID = ExtractUser(line);
+
+                    if (steamID.m_SteamID != 0)
+                    {
+                        if (steamID.BIndividualAccount())
+                        {
+                            if (begin)
+                            {
+                                if (!mPeers.TryGetValue(steamID, out SteamPeerInfo peer))
                                 {
-                                    Logger.WriteLine($"[PEER CONNECT] Player \"{steamID}\" was detected, but we don't have a P2P connection to them yet");
-                                    newPeerInfo.lastDisconnectTimeMS = sw.ElapsedMilliseconds;
+                                    // This is a genuinely new manager entry. Notify
+                                    // enforcement before GetPeer can accept or the
+                                    // timer can evaluate the returning session.
+                                    PeerBeginAuthSession?.Invoke(steamID.m_SteamID);
+
+                                    var newPeerInfo = new SteamPeerInfo(GetPeer(steamID, cycleId));
+                                    if (newPeerInfo.peer is null)
+                                    {
+                                        Logger.WriteLine($"[PEER CONNECT] Player \"{steamID}\" was detected, but we don't have a P2P connection to them yet");
+                                        newPeerInfo.lastDisconnectTimeMS = sw.ElapsedMilliseconds;
+                                    }
+                                    mPeers.Add(steamID, newPeerInfo);
                                 }
-                                mPeers.Add(steamID, newPeerInfo);
+                            }
+                            else
+                            {
+                                // peer just disconnected
+                                if (mPeers.ContainsKey(steamID))
+                                    RemovePeer(steamID, "Auth session with peer ended", PeerRemovalReason.AuthSessionEnded);
+                                else
+                                    PeerRemoved?.Invoke(steamID.m_SteamID, PeerRemovalReason.AuthSessionEnded);
                             }
                         }
                         else
                         {
-                            // peer just disconnected
-                            if (mPeers.ContainsKey(steamID))
-                                RemovePeer(steamID, "Auth session with peer ended", PeerRemovalReason.AuthSessionEnded);
-                            else
-                                PeerRemoved?.Invoke(steamID.m_SteamID, PeerRemovalReason.AuthSessionEnded);
+                            Logger.WriteLine($"[PARSE ERROR] \"{steamID}\" was not a valid steam user");
                         }
                     }
+                }
+
+                // clean up old peers.
+                foreach (var sid in mPeers.Keys.ToArray())
+                {
+                    var pInfo = mPeers[sid];
+                    bool isP2PConnected = false;
+                    if (pInfo.peer is null)
+                        isP2PConnected = (pInfo.peer = GetPeer(sid, cycleId)) != null;
                     else
                     {
-                        Logger.WriteLine($"[PARSE ERROR] \"{steamID}\" was not a valid steam user");
+                        isP2PConnected = pInfo.peer.UpdatePeerInfo();
+                        if (isP2PConnected)
+                            TryObserveHistory(pInfo.peer, cycleId);
+                    }
+
+                    if (pInfo.isConnected && !isP2PConnected)
+                        pInfo.lastDisconnectTimeMS = sw.ElapsedMilliseconds;
+                    pInfo.isConnected = isP2PConnected;
+
+                    if (!isP2PConnected && sw.ElapsedMilliseconds - pInfo.lastDisconnectTimeMS > PEER_TIMEOUT_MS)
+                    {
+                        RemovePeer(sid, pInfo.peer is null ? "P2P connection was not established" : "Peer disconnected from P2P session", PeerRemovalReason.TransportTimeout);
                     }
                 }
             }
-
-            // clean up old peers.
-            foreach (var sid in mPeers.Keys.ToArray())
+            catch (ObjectDisposedException) when (isShuttingDown)
             {
-                var pInfo = mPeers[sid];
-                bool isP2PConnected = false;
-                if (pInfo.peer is null)
-                    isP2PConnected = (pInfo.peer = GetPeer(sid)) != null;
-                else
-                    isP2PConnected = pInfo.peer.UpdatePeerInfo();
-
-                if (pInfo.isConnected && !isP2PConnected)
-                    pInfo.lastDisconnectTimeMS = sw.ElapsedMilliseconds;
-                pInfo.isConnected = isP2PConnected;
-
-                if (!isP2PConnected && sw.ElapsedMilliseconds - pInfo.lastDisconnectTimeMS > PEER_TIMEOUT_MS)
-                {
-                    RemovePeer(sid, pInfo.peer is null ? "P2P connection was not established" : "Peer disconnected from P2P session", PeerRemovalReason.TransportTimeout);
-                }
+                // The IPC reader may be disposed while an asynchronous update is yielding during shutdown.
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLogger.WriteException("ERROR", ex, "Steam peer update failed.");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref updateInProgress, 0);
             }
         }
 

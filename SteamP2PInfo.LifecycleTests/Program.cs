@@ -27,6 +27,19 @@ namespace SteamP2PInfo.LifecycleTests
                 HotkeyPressLatchIgnoresAutoRepeatUntilRelease,
                 DebugLoggingDefaultsOffAndNotifies,
                 DiagnosticLoggerCreatesFreshSupportLog,
+                ConnectionHistoryAveragesAndDeduplicatesSamples,
+                ConnectionHistoryRejectsInvalidSamplesAndUnavailableEndpoints,
+                ConnectionHistoryCompletionIsOnceOnly,
+                ConnectionHistoryPersistsPerGameAndPreservesSteamId,
+                ConnectionHistoryRetainsNewestFiveHundred,
+                ConnectionHistoryQuarantinesMalformedFilesAndClears,
+                ConnectionHistoryRecoveryCleanupCanBeRetried,
+                ConnectionHistoryFailedLoadCannotOverwriteExistingFile,
+                ConnectionHistoryWriteFailureIsIsolated,
+                ConnectionHistoryReplaceFailurePreservesExistingFile,
+                SteamPeerManagerFinalizesHistoryForEveryRemovalReason,
+                SteamPeerManagerHistoryFailureDoesNotInterruptRemoval,
+                SteamPeerManagerLoggingFailureDoesNotInterruptRemoval,
                 ManualQuarantineSurvivesAutomaticCleanup,
                 ManualBlockWorkflowContinuesAfterPeerFailure,
                 ManualBlockSingleActionRetriesUntilEvidenceAppears,
@@ -41,7 +54,7 @@ namespace SteamP2PInfo.LifecycleTests
                 ManualBlockScanStopsAtSafetyLimit,
                 ManualBlockDelayedTickCannotCrossSafetyLimit,
                 ManualBlockLobbyExitEndsScanImmediately,
-                ApplicationVersionIs140,
+                ApplicationVersionIs150,
                 ValidVersionFileIsParsed,
                 BlankAndMalformedVersionFilesAreRejected,
                 EqualAndOlderRemoteVersionsDoNotRequireAnUpdate,
@@ -212,6 +225,453 @@ namespace SteamP2PInfo.LifecycleTests
                 DiagnosticLogger.Stop();
                 if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
                     File.Delete(logPath);
+            }
+        }
+
+        private static void ConnectionHistoryAveragesAndDeduplicatesSamples()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime now = new DateTime(2026, 7, 25, 18, 0, 0, DateTimeKind.Utc);
+                var store = ConnectionHistoryStore.ForGame("history-average", tempDirectory);
+                AssertTrue(store.TryLoad(out string loadError), "A missing history file should load as empty. " + loadError);
+
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer)
+                {
+                    PeerName = "First Name",
+                    CurrentPing = 40d,
+                    Endpoint = new PeerNetworkEndpoint(IPAddress.Parse("203.0.113.10"), 27015)
+                };
+                int completionEvents = 0;
+                tracker.ConnectionCompleted += entry => completionEvents++;
+
+                tracker.Observe(peer, 1);
+                peer.CurrentPing = 400d;
+                peer.PeerName = "Latest Name";
+                peer.Endpoint = new PeerNetworkEndpoint(IPAddress.Parse("2001:db8::10"), 27016);
+                tracker.Observe(peer, 1);
+
+                now = now.AddSeconds(6);
+                peer.CurrentPing = 60d;
+                tracker.Observe(peer, 2);
+                now = now.AddSeconds(1);
+
+                PeerHistoryEntry completed = tracker.Complete(ReturningPeer, out string completionError);
+                AssertTrue(completed != null, "A tracked connection should complete successfully. " + completionError);
+                AssertEqual(50d, completed.AveragePingMs.Value, "Same-cycle observations must not double-count the first ping sample.");
+                AssertEqual("Latest Name", completed.SteamName, "The latest nonblank Steam name should be retained.");
+                AssertEqual("2001:db8::10", completed.IpAddressDisplay, "The latest valid IP address should be retained without its port.");
+                AssertEqual(1, completionEvents, "A completed connection should raise one UI update event.");
+                AssertEqual(1, store.Entries.Count, "The completed connection should be persisted immediately.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryRejectsInvalidSamplesAndUnavailableEndpoints()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime now = new DateTime(2026, 7, 25, 18, 10, 0, DateTimeKind.Utc);
+                var store = ConnectionHistoryStore.ForGame("history-invalid", tempDirectory);
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer)
+                {
+                    PeerName = "No Measurements",
+                    EndpointAvailable = false
+                };
+
+                double[] invalidPings = { -1d, 0d, double.NaN, double.PositiveInfinity, double.NegativeInfinity };
+                for (int i = 0; i < invalidPings.Length; i++)
+                {
+                    peer.CurrentPing = invalidPings[i];
+                    tracker.Observe(peer, i + 1);
+                    now = now.AddSeconds(6);
+                }
+
+                PeerHistoryEntry completed = tracker.Complete(ReturningPeer, out string completionError);
+                AssertTrue(completed != null, "An established connection should be stored even when measurements are unavailable. " + completionError);
+                AssertFalse(completed.AveragePingMs.HasValue, "Invalid and unknown ping readings must not affect the average.");
+                AssertEqual("Unavailable", completed.AveragePingDisplay, "A missing average should have an explicit display value.");
+                AssertEqual("Unavailable", completed.IpAddressDisplay, "A relay or unavailable endpoint should have an explicit display value.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryCompletionIsOnceOnly()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime now = new DateTime(2026, 7, 25, 18, 20, 0, DateTimeKind.Utc);
+                var store = ConnectionHistoryStore.ForGame("history-once", tempDirectory);
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer) { CurrentPing = 45d };
+
+                AssertTrue(tracker.Complete(ReturningPeer) == null, "A raw auth callback without an established transport must not create history.");
+                tracker.Observe(peer, 1);
+                now = now.AddSeconds(10);
+                AssertTrue(tracker.Complete(ReturningPeer) != null, "The established connection should complete once.");
+                AssertTrue(tracker.Complete(ReturningPeer) == null, "A late duplicate removal callback must not create another row.");
+                AssertEqual(1, store.Entries.Count, "The first connection should have exactly one record.");
+
+                now = now.AddSeconds(1);
+                tracker.Observe(peer, 2);
+                now = now.AddSeconds(10);
+                AssertTrue(tracker.Complete(ReturningPeer) != null, "A later reconnect should create a separate completed connection.");
+                AssertEqual(2, store.Entries.Count, "Reconnects after removal should remain separate rows.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryPersistsPerGameAndPreservesSteamId()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime connectedAt = new DateTime(2026, 7, 25, 18, 30, 0, DateTimeKind.Utc);
+                var gameA = ConnectionHistoryStore.ForGame("game-a", tempDirectory);
+                var gameB = ConnectionHistoryStore.ForGame("game-b", tempDirectory);
+                var entry = new PeerHistoryEntry(
+                    ReturningPeer,
+                    "Persistent Player",
+                    55.5d,
+                    "198.51.100.25",
+                    connectedAt,
+                    connectedAt.AddMinutes(2));
+
+                AssertTrue(gameA.TryAppend(entry, out string appendError), "The per-game history should save successfully. " + appendError);
+                AssertEqual(0, gameB.Entries.Count, "Another game's in-memory history must remain isolated.");
+
+                var reloadedA = ConnectionHistoryStore.ForGame("game-a", tempDirectory);
+                var reloadedB = ConnectionHistoryStore.ForGame("game-b", tempDirectory);
+                AssertTrue(reloadedA.TryLoad(out string loadAError), "Game A should reload its history. " + loadAError);
+                AssertTrue(reloadedB.TryLoad(out string loadBError), "A missing Game B history should load empty. " + loadBError);
+                AssertEqual(1, reloadedA.Entries.Count, "Game A should reload exactly its own record.");
+                AssertEqual(0, reloadedB.Entries.Count, "Game B must not see Game A's record.");
+                AssertEqual(ReturningPeer.ToString(), reloadedA.Entries[0].SteamId, "SteamID64 must round-trip without numeric precision loss.");
+                AssertEqual(DateTimeKind.Utc, reloadedA.Entries[0].ConnectedAtUtc.Kind, "Persisted lifecycle timestamps should reload as UTC.");
+
+                string json = File.ReadAllText(reloadedA.FilePath);
+                AssertTrue(json.Contains("\"steamId\": \"" + ReturningPeer + "\""), "SteamID64 must be represented as a quoted decimal string in JSON.");
+
+                AssertTrue(reloadedA.TryClear(out string clearError), "Clearing Game A should persist successfully. " + clearError);
+                AssertEqual(0, reloadedA.Entries.Count, "Clearing should remove Game A's visible records.");
+                AssertEqual(0, reloadedB.Entries.Count, "Clearing Game A must not affect another game.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryRetainsNewestFiveHundred()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime startedAt = new DateTime(2026, 7, 25, 19, 0, 0, DateTimeKind.Utc);
+                var store = ConnectionHistoryStore.ForGame("history-retention", tempDirectory);
+
+                for (int i = 0; i < 502; i++)
+                {
+                    DateTime connectedAt = startedAt.AddMinutes(i);
+                    var entry = new PeerHistoryEntry(
+                        ReturningPeer + (ulong)i,
+                        "Player " + i,
+                        40d + i,
+                        "203.0.113.10",
+                        connectedAt,
+                        connectedAt.AddSeconds(30));
+                    AssertTrue(store.TryAppend(entry, out string appendError), "Retention fixture entry " + i + " should save. " + appendError);
+                }
+
+                AssertEqual(ConnectionHistoryStore.MaximumEntryCount, store.Entries.Count, "History should retain exactly the newest 500 records.");
+                AssertEqual((ReturningPeer + 501UL).ToString(), store.Entries[0].SteamId, "The newest completed connection should be first.");
+                AssertEqual((ReturningPeer + 2UL).ToString(), store.Entries[store.Entries.Count - 1].SteamId, "The two oldest records should be trimmed.");
+
+                var reloaded = ConnectionHistoryStore.ForGame("history-retention", tempDirectory);
+                AssertTrue(reloaded.TryLoad(out string loadError), "The retained history should reload. " + loadError);
+                AssertEqual(ConnectionHistoryStore.MaximumEntryCount, reloaded.Entries.Count, "The 500-record cap should survive reload.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryQuarantinesMalformedFilesAndClears()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string historyPath = Path.Combine(tempDirectory, "malformed.json");
+                File.WriteAllText(historyPath, "{ this is not valid JSON");
+                var store = new ConnectionHistoryStore(historyPath);
+
+                AssertTrue(store.TryLoad(out string loadWarning), "Malformed history should be quarantined and recovered as empty. " + loadWarning);
+                AssertTrue(!string.IsNullOrWhiteSpace(loadWarning), "Malformed recovery should report where the original file was preserved.");
+                AssertEqual(0, store.Entries.Count, "Malformed history should not expose partial records.");
+                AssertEqual(1, Directory.GetFiles(tempDirectory, "malformed.json.corrupt-*").Length, "The malformed source should be preserved exactly once.");
+                AssertTrue(store.HasRecoveryCopies, "The recovered store should expose that a private recovery copy remains.");
+
+                DateTime now = new DateTime(2026, 7, 25, 20, 0, 0, DateTimeKind.Utc);
+                var recoveredEntry = new PeerHistoryEntry(ReturningPeer, "Recovered", 70d, null, now, now.AddMinutes(1));
+                AssertTrue(store.TryAppend(recoveredEntry, out string appendError), "The recovered store should accept new records. " + appendError);
+                AssertTrue(store.TryClear(out string clearError), "The recovered store should clear atomically. " + clearError);
+                AssertEqual(0, Directory.GetFiles(tempDirectory, "malformed.json.corrupt-*").Length, "Clearing history should remove preserved recovery copies for that game.");
+                AssertFalse(store.HasRecoveryCopies, "A successful clear should report that no recovery copies remain.");
+
+                var reloaded = new ConnectionHistoryStore(historyPath);
+                AssertTrue(reloaded.TryLoad(out string reloadError), "Cleared history should reload. " + reloadError);
+                AssertEqual(0, reloaded.Entries.Count, "A successful clear should remain empty across reload.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryRecoveryCleanupCanBeRetried()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string historyPath = Path.Combine(tempDirectory, "cleanup-retry.json");
+                File.WriteAllText(historyPath, "{ malformed recovery data");
+                var store = new ConnectionHistoryStore(historyPath);
+                AssertTrue(store.TryLoad(out string loadWarning), "Malformed history should recover before the cleanup retry test. " + loadWarning);
+
+                string recoveryPath = Directory.GetFiles(tempDirectory, "cleanup-retry.json.corrupt-*")[0];
+                using (var lockedRecovery = new FileStream(recoveryPath, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    AssertTrue(store.TryClear(out string cleanupWarning), "The canonical clear should succeed even while recovery-copy cleanup is blocked.");
+                    AssertTrue(!string.IsNullOrWhiteSpace(cleanupWarning), "Blocked recovery-copy cleanup should return a warning.");
+                    AssertTrue(store.HasRecoveryCopies, "The locked recovery copy should remain discoverable for a later retry.");
+                }
+
+                AssertTrue(store.TryClear(out string retryError), "Recovery-copy cleanup should be retryable after the file is unlocked. " + retryError);
+                AssertTrue(string.IsNullOrWhiteSpace(retryError), "A successful cleanup retry should not return a warning.");
+                AssertFalse(store.HasRecoveryCopies, "The cleanup retry should remove the private recovery copy.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryFailedLoadCannotOverwriteExistingFile()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string historyPath = Path.Combine(tempDirectory, "locked.json");
+                byte[] originalBytes = System.Text.Encoding.UTF8.GetBytes("existing history that must not be overwritten");
+                File.WriteAllBytes(historyPath, originalBytes);
+                var store = new ConnectionHistoryStore(historyPath);
+
+                using (var lockedFile = new FileStream(historyPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    AssertTrue(!store.TryLoad(out string loadError), "An exclusively locked history file should fail to load.");
+                    AssertTrue(!string.IsNullOrWhiteSpace(loadError), "A failed load should report a diagnostic error.");
+                }
+
+                DateTime now = new DateTime(2026, 7, 25, 20, 5, 0, DateTimeKind.Utc);
+                var entry = new PeerHistoryEntry(ReturningPeer, "Must Not Save", 75d, "203.0.113.10", now, now.AddMinutes(1));
+                AssertTrue(!store.TryAppend(entry, out string appendError), "A store that failed to load must reject writes.");
+                AssertTrue(!string.IsNullOrWhiteSpace(appendError), "A rejected write should explain that history is read-only.");
+                AssertEqual(
+                    Convert.ToBase64String(originalBytes),
+                    Convert.ToBase64String(File.ReadAllBytes(historyPath)),
+                    "A failed load must leave the existing history file byte-for-byte unchanged.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryWriteFailureIsIsolated()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string blockedParent = Path.Combine(tempDirectory, "not-a-directory");
+                File.WriteAllText(blockedParent, "This file intentionally prevents creation of a history directory.");
+                var store = new ConnectionHistoryStore(Path.Combine(blockedParent, "history.json"));
+                DateTime now = new DateTime(2026, 7, 25, 20, 10, 0, DateTimeKind.Utc);
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer) { CurrentPing = 80d };
+                int completionEvents = 0;
+                tracker.ConnectionCompleted += entry => completionEvents++;
+
+                tracker.Observe(peer, 1);
+                now = now.AddMinutes(1);
+                PeerHistoryEntry completed = tracker.Complete(ReturningPeer, out string completionError);
+
+                AssertTrue(completed == null, "A failed atomic write must not report a persisted completion.");
+                AssertTrue(!string.IsNullOrWhiteSpace(completionError), "A failed write should provide a diagnostic error.");
+                AssertEqual(0, completionEvents, "The UI completion event must not fire when persistence fails.");
+                AssertEqual(0, store.Entries.Count, "A failed write must leave the store's previous in-memory state unchanged.");
+                AssertEqual(0, tracker.ActiveConnectionCount, "A failed history write must not leave peer cleanup blocked on an active tracker record.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void ConnectionHistoryReplaceFailurePreservesExistingFile()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string historyPath = Path.Combine(tempDirectory, "replace-failure.json");
+                var store = new ConnectionHistoryStore(historyPath);
+                DateTime now = new DateTime(2026, 7, 25, 20, 15, 0, DateTimeKind.Utc);
+                var originalEntry = new PeerHistoryEntry(ReturningPeer, "Original", 50d, "198.51.100.20", now, now.AddMinutes(1));
+                AssertTrue(store.TryAppend(originalEntry, out string initialError), "The original history fixture should save. " + initialError);
+                byte[] originalBytes = File.ReadAllBytes(historyPath);
+
+                var replacementEntry = new PeerHistoryEntry(OtherQuarantinedPeer, "Replacement", 70d, "203.0.113.20", now, now.AddMinutes(2));
+                using (var lockedFile = new FileStream(historyPath, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    AssertTrue(!store.TryAppend(replacementEntry, out string replaceError), "Replacing an exclusively locked history file should fail.");
+                    AssertTrue(!string.IsNullOrWhiteSpace(replaceError), "A failed atomic replacement should report a diagnostic error.");
+                }
+
+                AssertEqual(
+                    Convert.ToBase64String(originalBytes),
+                    Convert.ToBase64String(File.ReadAllBytes(historyPath)),
+                    "A failed atomic replacement must preserve the existing file byte-for-byte.");
+                AssertEqual(1, store.Entries.Count, "A failed replacement must preserve the existing in-memory history.");
+                AssertEqual(ReturningPeer.ToString(), store.Entries[0].SteamId, "The failed replacement must not expose the unsaved entry.");
+                AssertEqual(0, Directory.GetFiles(tempDirectory, ".replace-failure.json.*.tmp").Length, "A failed replacement should clean up its temporary file.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void SteamPeerManagerFinalizesHistoryForEveryRemovalReason()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                int fixtureIndex = 0;
+                foreach (PeerRemovalReason removalReason in Enum.GetValues(typeof(PeerRemovalReason)))
+                {
+                    ulong steamId = ReturningPeer + (ulong)fixtureIndex++;
+                    DateTime now = new DateTime(2026, 7, 25, 20, 20, 0, DateTimeKind.Utc);
+                    var store = ConnectionHistoryStore.ForGame("manager-" + removalReason, tempDirectory);
+                    var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                    var peer = new FakePeer(steamId) { CurrentPing = 65d };
+                    tracker.Observe(peer, 1);
+                    now = now.AddMinutes(1);
+
+                    int callbackCount = 0;
+                    ulong callbackSteamId = 0;
+                    PeerRemovalReason callbackReason = default(PeerRemovalReason);
+                    SteamPeerManager.FinalizePeerRemoval(
+                        new SteamPeerInfo(peer),
+                        peer.SteamID,
+                        removalReason,
+                        tracker,
+                        (removedSteamId, reason) =>
+                        {
+                            callbackCount++;
+                            callbackSteamId = removedSteamId;
+                            callbackReason = reason;
+                        });
+
+                    AssertEqual(1, store.Entries.Count, removalReason + " should persist exactly one completed connection.");
+                    AssertEqual(0, tracker.ActiveConnectionCount, removalReason + " should finalize the active tracker record.");
+                    AssertEqual(1, peer.DisposeCalls, removalReason + " should dispose the peer after history finalization.");
+                    AssertEqual(1, callbackCount, removalReason + " should preserve the existing removal callback.");
+                    AssertEqual(steamId, callbackSteamId, removalReason + " should preserve the callback SteamID.");
+                    AssertEqual(removalReason, callbackReason, removalReason + " should preserve the callback reason.");
+                }
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void SteamPeerManagerHistoryFailureDoesNotInterruptRemoval()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                string blockedParent = Path.Combine(tempDirectory, "not-a-directory");
+                File.WriteAllText(blockedParent, "This file intentionally prevents creation of a history directory.");
+                var store = new ConnectionHistoryStore(Path.Combine(blockedParent, "history.json"));
+                DateTime now = new DateTime(2026, 7, 25, 20, 30, 0, DateTimeKind.Utc);
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer) { CurrentPing = 90d };
+                tracker.Observe(peer, 1);
+                now = now.AddMinutes(1);
+                int callbackCount = 0;
+
+                SteamPeerManager.FinalizePeerRemoval(
+                    new SteamPeerInfo(peer),
+                    peer.SteamID,
+                    PeerRemovalReason.TransportTimeout,
+                    tracker,
+                    (removedSteamId, reason) => callbackCount++);
+
+                AssertEqual(0, store.Entries.Count, "The synthetic history write failure should not create a record.");
+                AssertEqual(0, tracker.ActiveConnectionCount, "The failed history write should still finalize the tracker state.");
+                AssertEqual(1, peer.DisposeCalls, "A history failure must not prevent peer disposal.");
+                AssertEqual(1, callbackCount, "A history failure must not prevent the existing removal callback.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
+            }
+        }
+
+        private static void SteamPeerManagerLoggingFailureDoesNotInterruptRemoval()
+        {
+            string tempDirectory = CreateHistoryTestDirectory();
+            try
+            {
+                DateTime now = new DateTime(2026, 7, 25, 20, 40, 0, DateTimeKind.Utc);
+                var store = ConnectionHistoryStore.ForGame("manager-log-failure", tempDirectory);
+                var tracker = new PeerConnectionHistoryTracker(store, () => now);
+                var peer = new FakePeer(ReturningPeer) { CurrentPing = 55d };
+                tracker.Observe(peer, 1);
+                now = now.AddMinutes(1);
+                int callbackCount = 0;
+
+                SteamPeerManager.FinalizePeerRemoval(
+                    new SteamPeerInfo(peer),
+                    peer.SteamID,
+                    PeerRemovalReason.Shutdown,
+                    tracker,
+                    (removedSteamId, reason) => callbackCount++,
+                    () => throw new IOException("Synthetic disconnect-log failure."));
+
+                AssertEqual(1, store.Entries.Count, "History should be persisted before the disconnect log is attempted.");
+                AssertEqual(0, tracker.ActiveConnectionCount, "A disconnect-log failure must not strand tracker state.");
+                AssertEqual(1, peer.DisposeCalls, "A disconnect-log failure must not prevent peer disposal.");
+                AssertEqual(1, callbackCount, "A disconnect-log failure must not prevent the existing removal callback.");
+            }
+            finally
+            {
+                DeleteHistoryTestDirectory(tempDirectory);
             }
         }
 
@@ -678,10 +1138,10 @@ namespace SteamP2PInfo.LifecycleTests
             }
         }
 
-        private static void ApplicationVersionIs140()
+        private static void ApplicationVersionIs150()
         {
-            AssertEqual(new System.Version("1.4.0.0"), VersionCheck.CurrentVersion, "Application assembly metadata must identify version 1.4.0.");
-            AssertEqual("v1.4.0", VersionCheck.CurrentVersionDisplay, "The displayed application version must identify v1.4.0.");
+            AssertEqual(new System.Version("1.5.0.0"), VersionCheck.CurrentVersion, "Application assembly metadata must identify version 1.5.0.");
+            AssertEqual("v1.5.0", VersionCheck.CurrentVersionDisplay, "The displayed application version must identify v1.5.0.");
         }
 
         private static void ValidVersionFileIsParsed()
@@ -725,6 +1185,10 @@ namespace SteamP2PInfo.LifecycleTests
             private readonly int closeFailuresBeforeSuccess;
 
             public int CloseSessionCalls { get; private set; }
+            public int DisposeCalls { get; private set; }
+            public string PeerName { get; set; } = "Fake Player";
+            public double CurrentPing { get; set; }
+            public bool EndpointAvailable { get; set; } = true;
             public PeerNetworkEndpoint Endpoint { get; set; } = new PeerNetworkEndpoint(IPAddress.Parse("203.0.113.10"), 27015);
 
             public FakePeer(ulong steamId, bool throwOnClose = false, int closeFailuresBeforeSuccess = 0)
@@ -735,8 +1199,9 @@ namespace SteamP2PInfo.LifecycleTests
             }
 
             public override bool IsOldAPI => false;
+            public override string Name => PeerName;
             public override string ConnectionTypeName => "Fake";
-            public override double Ping => 0d;
+            public override double Ping => CurrentPing;
             public override double ConnectionQuality => 1d;
 
             public override bool UpdatePeerInfo()
@@ -746,6 +1211,12 @@ namespace SteamP2PInfo.LifecycleTests
 
             public override bool TryGetRemoteEndpoint(out PeerNetworkEndpoint peerEndpoint)
             {
+                if (!EndpointAvailable || Endpoint == null)
+                {
+                    peerEndpoint = null;
+                    return false;
+                }
+
                 peerEndpoint = Endpoint;
                 return true;
             }
@@ -756,6 +1227,11 @@ namespace SteamP2PInfo.LifecycleTests
                 if (throwOnClose)
                     throw new InvalidOperationException("Synthetic CloseSession failure.");
                 return CloseSessionCalls > closeFailuresBeforeSuccess;
+            }
+
+            public override void Dispose()
+            {
+                DisposeCalls++;
             }
         }
 
@@ -801,6 +1277,21 @@ namespace SteamP2PInfo.LifecycleTests
             public void Dispose()
             {
             }
+        }
+
+        private static string CreateHistoryTestDirectory()
+        {
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "SteamP2PInfo-HistoryTests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            return directory;
+        }
+
+        private static void DeleteHistoryTestDirectory(string directory)
+        {
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                Directory.Delete(directory, true);
         }
 
         private static void AssertTrue(bool condition, string message)

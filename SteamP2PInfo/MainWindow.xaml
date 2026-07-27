@@ -8,7 +8,7 @@
         xmlns:config="clr-namespace:SteamP2PInfo.Config"
         mc:Ignorable="d"
         WindowStartupLocation="CenterScreen"
-        Title="Steam P2P INFO /W PingGuard [v1.4.0]" Width="800" Height="450">
+        Title="Steam P2P INFO /W PingGuard [v1.5.0]" Width="800" Height="450">
     <mah:MetroWindow.RightWindowCommands>
         <mah:WindowCommands>
             <TextBlock VerticalAlignment="Center" Margin="0 0 10 0">           
@@ -48,6 +48,52 @@
                         <DataGridTextColumn Header="Connection Quality" IsReadOnly="True" Binding="{Binding ConnectionQuality, StringFormat=N2}" ElementStyle="{StaticResource textCenter}"></DataGridTextColumn>
                     </DataGrid.Columns>
                 </DataGrid>
+            </mah:MetroTabItem>
+            <mah:MetroTabItem Header="History">
+                <Grid Margin="10 0 10 10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"></RowDefinition>
+                        <RowDefinition Height="*"></RowDefinition>
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="0 0 0 8">
+                        <Button Name="buttonClearHistory"
+                                DockPanel.Dock="Right"
+                                Content="Clear History"
+                                IsEnabled="False"
+                                Padding="12 4"
+                                Click="buttonClearHistory_Click"></Button>
+                        <TextBlock Name="textHistoryScope"
+                                   Text="No game attached"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"></TextBlock>
+                    </DockPanel>
+                    <Grid Grid.Row="1">
+                        <DataGrid Name="dataGridHistory"
+                                  ItemsSource="{Binding}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  CanUserReorderColumns="False"
+                                  CanUserSortColumns="False"
+                                  SelectionUnit="FullRow"
+                                  Visibility="Collapsed">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Steam Name" IsReadOnly="True" Binding="{Binding SteamName}" Width="2*"></DataGridTextColumn>
+                                <DataGridTextColumn Header="Average Ping (ms)" IsReadOnly="True" Binding="{Binding AveragePingDisplay}" Width="*" ElementStyle="{StaticResource textCenter}"></DataGridTextColumn>
+                                <DataGridTextColumn Header="IP Address" IsReadOnly="True" Binding="{Binding IpAddressDisplay}" Width="1.5*"></DataGridTextColumn>
+                                <DataGridTextColumn Header="Steam ID" IsReadOnly="True" Binding="{Binding SteamId}" Width="1.5*"></DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <TextBlock Name="textHistoryEmpty"
+                                   Text="Attach a game to view that game's connection history."
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Margin="20"></TextBlock>
+                    </Grid>
+                </Grid>
             </mah:MetroTabItem>
             <mah:MetroTabItem Header="Config">
                 <ScrollViewer>
