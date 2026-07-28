@@ -10,10 +10,9 @@ namespace SteamP2PInfo
 {
     internal sealed class P2PEnforcementCoordinator : IDisposable
     {
-        internal static readonly TimeSpan EnforcementInterval = TimeSpan.FromMilliseconds(250);
-        internal static readonly TimeSpan ManualBlockMinimumScanWindow = TimeSpan.FromSeconds(20);
-        internal static readonly TimeSpan ManualBlockPeerAbsenceGracePeriod = TimeSpan.FromSeconds(2);
-        internal static readonly TimeSpan ManualBlockMaximumScanWindow = TimeSpan.FromSeconds(60);
+        internal static readonly TimeSpan EnforcementInterval = TimeSpan.FromMilliseconds(100);
+        internal static readonly TimeSpan ManualReconnectFailureBackoff = TimeSpan.FromSeconds(30);
+        private const int ManualReconnectFastRetryFailures = 2;
 
         private readonly DispatcherTimer timer;
         private readonly int gameProcessId;
@@ -24,17 +23,23 @@ namespace SteamP2PInfo
         private readonly PeerQuarantineLifecycle quarantinedPeers = new PeerQuarantineLifecycle();
         private readonly HashSet<ulong> returningPeers = new HashSet<ulong>();
         private readonly Dictionary<ulong, ManualBlockTarget> manualBlockTargets = new Dictionary<ulong, ManualBlockTarget>();
-        private DateTime manualBlockMinimumEndUtc;
-        private DateTime manualBlockMaximumEndUtc;
-        private DateTime? manualAllTargetsAbsentSinceUtc;
         private bool manualBlockScanActive;
-        private bool manualMinimumBoundaryScanCompleted;
-        private bool manualMinimumElapsedLogged;
+        private bool manualReconnectGuardActive;
+        private bool manualReconnectReleasePending;
+        private bool manualReconnectGuardFailureLogged;
+        private bool manualReconnectReleaseFailureLogged;
+        private int manualReconnectGuardFailureCount;
+        private DateTime nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
         private bool evaluating;
         private bool disposed;
         private bool firewallErrorShown;
+        private bool firewallErrorNotificationQueued;
+        private string lastFirewallInitializationError;
 
         internal bool IsManualBlockScanActive => manualBlockScanActive;
+        internal bool IsManualReconnectGuardActive => manualReconnectGuardActive;
+        internal bool IsManualReconnectReleasePending => manualReconnectReleasePending;
+        internal bool IsFirewallErrorNotificationQueued => firewallErrorNotificationQueued;
 
         public P2PEnforcementCoordinator(int gameProcessId)
             : this(
@@ -68,6 +73,10 @@ namespace SteamP2PInfo
         {
             if (!disposed)
             {
+                // Open the dynamic WFP session while attaching rather than inside
+                // the low-level keyboard hook. The hotkey then only has to publish
+                // the already-prepared policy transaction.
+                EnsureFirewall("Manual Peer Block Error", false, false);
                 timer.Start();
                 DiagnosticLogger.Write("ACTION", "P2P enforcement timer started for game PID " + gameProcessId + ".");
             }
@@ -92,6 +101,13 @@ namespace SteamP2PInfo
             returningPeers.Clear();
             manualBlockTargets.Clear();
             manualBlockScanActive = false;
+            manualReconnectGuardActive = false;
+            manualReconnectReleasePending = false;
+            manualReconnectGuardFailureLogged = false;
+            manualReconnectReleaseFailureLogged = false;
+            manualReconnectGuardFailureCount = 0;
+            nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
+            firewallErrorNotificationQueued = false;
         }
 
         internal static bool ShouldDisconnect(double ping, double thresholdMs)
@@ -106,39 +122,56 @@ namespace SteamP2PInfo
         }
 
         /// <summary>
-        /// Begins sustained exact-flow WFP enforcement for every peer currently
-        /// known by SteamPeerManager. The action follows replacement peer
-        /// instances and endpoint migrations throughout a twenty-second minimum
-        /// scan window. It then follows only those tracked Steam IDs until they
-        /// disappear, the game reports that it left, or a safety timeout expires.
+        /// Atomically enables a process-scoped UDP reconnect lock for the attached
+        /// game and steam.exe, then closes every logical peer session. The lock
+        /// remains active through same-lobby reconnect attempts and is released
+        /// when the selected game reports leaving that lobby.
         /// </summary>
         internal void BlockAllConnectedPeers()
         {
             if (disposed)
                 return;
 
-            SteamPeerBase[] peers = peerProvider().Where(peer => peer != null).ToArray();
-            if (!manualBlockScanActive)
-                manualBlockTargets.Clear();
+            if (manualReconnectReleasePending)
+            {
+                // A deliberate keypress may immediately retry a failed lobby-exit
+                // cleanup, but a partially released policy must be removed before
+                // a fresh atomic reconnect guard can be armed.
+                nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
+                if (!TryReleaseManualReconnectGuard())
+                {
+                    Logger.WriteEnforcementLine(
+                        "[MANUAL BLOCK] A new request was received while lobby-exit cleanup is still pending; the existing UDP lock will be removed before a fresh lock is armed.");
+                    return;
+                }
+            }
 
+            SteamPeerBase[] peers = peerProvider().Where(peer => peer != null).ToArray();
             foreach (SteamPeerBase peer in peers)
                 TrackManualBlockTarget(peer);
 
             manualBlockScanActive = true;
-            manualAllTargetsAbsentSinceUtc = null;
-            manualMinimumBoundaryScanCompleted = false;
-            manualMinimumElapsedLogged = false;
-            DateTime startedUtc = utcNow();
-            manualBlockMinimumEndUtc = startedUtc.Add(ManualBlockMinimumScanWindow);
-            manualBlockMaximumEndUtc = startedUtc.Add(ManualBlockMaximumScanWindow);
+            manualReconnectReleasePending = false;
+            manualReconnectReleaseFailureLogged = false;
+            // A deliberate new keypress bypasses any failure backoff so the user
+            // can retry immediately after correcting permissions or service state.
+            nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
             DiagnosticLogger.Write(
                 "ACTION",
                 string.Format(
-                    "Manual block-all-peers hotkey action started for {0} peer(s); exact-flow enforcement will scan for at least {1:F1} seconds, follow those peers until the lobby ends, and stop after {2:F1} seconds if Steam IPC misses the lobby exit.",
-                    manualBlockTargets.Count,
-                    ManualBlockMinimumScanWindow.TotalSeconds,
-                    ManualBlockMaximumScanWindow.TotalSeconds));
-            RetryPendingManualBlocks();
+                    "Manual block-all-peers hotkey activated for {0} visible peer(s); the game-and-Steam UDP reconnect lock will remain active until the current lobby is left or the game/tool exits.",
+                    peers.Length));
+
+            // This call publishes the blocking policy synchronously, before the
+            // keyboard hook returns. Steam CloseSession calls are queued so slow
+            // Steam callbacks and logging cannot hold the global keyboard hook.
+            if (!EnsureManualReconnectGuard())
+                return;
+
+            if (timer.IsEnabled)
+                timer.Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(RetryPendingManualBlocks));
+            else
+                RetryPendingManualBlocks();
         }
 
         internal void RetryPendingManualBlocks()
@@ -161,13 +194,13 @@ namespace SteamP2PInfo
         {
             if (!manualBlockScanActive)
                 return;
-
-            DateTime currentUtc = utcNow();
-            if (currentUtc >= manualBlockMaximumEndUtc)
+            if (manualReconnectReleasePending)
             {
-                CompleteManualBlockScan("the maximum safety window elapsed without a reliable lobby-exit signal");
+                TryReleaseManualReconnectGuard();
                 return;
             }
+            if (!EnsureManualReconnectGuard())
+                return;
 
             SteamPeerBase[] currentPeers = peerProvider()
                 .Where(peer => peer != null)
@@ -176,18 +209,13 @@ namespace SteamP2PInfo
                 .GroupBy(peer => peer.SteamID.m_SteamID)
                 .ToDictionary(group => group.Key, group => group.First());
 
-            bool minimumElapsed = currentUtc >= manualBlockMinimumEndUtc;
-            bool acceptingNewTargets = !minimumElapsed || !manualMinimumBoundaryScanCompleted;
-            if (acceptingNewTargets)
-            {
-                foreach (SteamPeerBase peer in currentPeers)
-                    TrackManualBlockTarget(peer);
-            }
-            if (minimumElapsed)
-                manualMinimumBoundaryScanCompleted = true;
+            // Once the kill switch is armed it covers every later peer as well as
+            // the peers visible on the original keypress.
+            foreach (SteamPeerBase peer in currentPeers)
+                TrackManualBlockTarget(peer);
 
             foreach (ManualBlockTarget target in manualBlockTargets.Values)
-                target.Peer = currentPeersById.TryGetValue(target.SteamId, out SteamPeerBase peer) ? peer : null;
+                target.AttachPeer(currentPeersById.TryGetValue(target.SteamId, out SteamPeerBase peer) ? peer : null);
 
             foreach (ManualBlockTarget target in manualBlockTargets.Values.ToArray())
             {
@@ -207,37 +235,6 @@ namespace SteamP2PInfo
                 if (!manualBlockScanActive)
                     return;
             }
-
-            if (currentUtc < manualBlockMinimumEndUtc)
-                return;
-
-            if (manualBlockTargets.Count == 0)
-            {
-                CompleteManualBlockScan("the minimum scan window elapsed without detecting a peer");
-                return;
-            }
-
-            if (!manualBlockTargets.Values.Any(target => target.Peer != null))
-            {
-                if (!manualAllTargetsAbsentSinceUtc.HasValue)
-                    manualAllTargetsAbsentSinceUtc = currentUtc;
-
-                if (currentUtc - manualAllTargetsAbsentSinceUtc.Value < ManualBlockPeerAbsenceGracePeriod)
-                    return;
-
-                CompleteManualBlockScan("the minimum scan window elapsed and no tracked peer session remained visible through the replacement-session grace period");
-                return;
-            }
-
-            manualAllTargetsAbsentSinceUtc = null;
-
-            if (!manualMinimumElapsedLogged)
-            {
-                manualMinimumElapsedLogged = true;
-                DiagnosticLogger.Write(
-                    "ACTION",
-                    "Manual block-all-peers minimum scan window elapsed; enforcement remains active for the originally tracked Steam IDs until they disappear, the game leaves the lobby, or the safety timeout expires.");
-            }
         }
 
         private void TrackManualBlockTarget(SteamPeerBase peer)
@@ -249,23 +246,169 @@ namespace SteamP2PInfo
                 manualBlockTargets.Add(steamId, target);
             }
 
-            target.Peer = peer;
+            target.AttachPeer(peer);
         }
 
-        private void CompleteManualBlockScan(string reason)
+        private ManualBlockTarget TrackManualBlockTarget(ulong steamId)
         {
-            int targetCount = manualBlockTargets.Count;
+            if (!manualBlockTargets.TryGetValue(steamId, out ManualBlockTarget target))
+            {
+                target = new ManualBlockTarget(steamId);
+                manualBlockTargets.Add(steamId, target);
+            }
+
+            return target;
+        }
+
+        private bool EnsureManualReconnectGuard()
+        {
+            if (manualReconnectGuardActive)
+                return true;
+            DateTime attemptUtc = utcNow();
+            if (attemptUtc < nextManualReconnectGuardAttemptUtc)
+                return false;
+            if (!EnsureFirewall("Manual Peer Block Error", false, false))
+            {
+                ScheduleManualReconnectGuardRetry(attemptUtc);
+                ReportManualReconnectGuardFailure(
+                    string.IsNullOrWhiteSpace(lastFirewallInitializationError)
+                        ? "Windows Filtering Platform could not be initialized."
+                        : lastFirewallInitializationError);
+                return false;
+            }
+
+            FirewallBlockResult result;
+            try
+            {
+                result = firewall.BlockManualReconnect();
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLogger.WriteException(
+                    "FIREWALL ERROR",
+                    ex,
+                    "Failed to activate the manual UDP reconnect lock.");
+                ScheduleManualReconnectGuardRetry(attemptUtc);
+                ReportManualReconnectGuardFailure(ex.Message);
+                return false;
+            }
+
+            if (!result.Success)
+            {
+                ScheduleManualReconnectGuardRetry(attemptUtc);
+                ReportManualReconnectGuardFailure(result.Error);
+                return false;
+            }
+
+            manualReconnectGuardActive = true;
+            manualReconnectGuardFailureLogged = false;
+            manualReconnectGuardFailureCount = 0;
+            nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
+            Logger.WriteEnforcementLine(
+                "[MANUAL BLOCK] Application-scoped UDP reconnect lock is active for the attached game and steam.exe; it will be removed when the current lobby is left or the game/tool exits.");
+            return true;
+        }
+
+        private void ReportManualReconnectGuardFailure(string error)
+        {
+            if (manualReconnectGuardFailureLogged)
+                return;
+
+            manualReconnectGuardFailureLogged = true;
+            string message =
+                "Failed to activate the game-and-Steam UDP reconnect lock: " + error +
+                " No Steam session was closed. The manual request remains armed; the WFP lock is not active and will retry.";
+            ReportFirewallError(message, "Manual Peer Block Error", false, false);
+            QueueFirewallErrorNotification(message, "Manual Peer Block Error", false);
+        }
+
+        private bool TryReleaseManualReconnectGuard()
+        {
+            if (!manualReconnectReleasePending)
+                return true;
+
+            if (!manualReconnectGuardActive)
+            {
+                CompleteManualReconnectRelease(false);
+                return true;
+            }
+
+            DateTime attemptUtc = utcNow();
+            if (attemptUtc < nextManualReconnectGuardAttemptUtc)
+                return false;
+
+            FirewallBlockResult result;
+            try
+            {
+                result = firewall == null
+                    ? FirewallBlockResult.Failed("The WFP service is not available.")
+                    : firewall.RemoveManualReconnect();
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLogger.WriteException(
+                    "FIREWALL ERROR",
+                    ex,
+                    "Failed to deactivate the manual UDP reconnect lock.");
+                ScheduleManualReconnectGuardRetry(attemptUtc);
+                ReportManualReconnectReleaseFailure(ex.Message);
+                return false;
+            }
+
+            if (!result.Success)
+            {
+                ScheduleManualReconnectGuardRetry(attemptUtc);
+                ReportManualReconnectReleaseFailure(result.Error);
+                return false;
+            }
+
+            manualReconnectGuardActive = false;
+            CompleteManualReconnectRelease(true);
+            return true;
+        }
+
+        private void CompleteManualReconnectRelease(bool removedActiveGuard)
+        {
+            int releasedPeers = quarantinedPeers.ReleaseOwner(
+                PeerQuarantineOwner.ManualHotkey,
+                peerId => firewall?.Remove(peerId));
+
             manualBlockTargets.Clear();
             manualBlockScanActive = false;
-            manualAllTargetsAbsentSinceUtc = null;
-            manualMinimumBoundaryScanCompleted = false;
-            manualMinimumElapsedLogged = false;
-            DiagnosticLogger.Write(
-                "ACTION",
-                string.Format(
-                    "Manual block-all-peers action completed because {0}; stopped tracking {1} peer(s). Retained WFP filters remain active.",
-                    reason,
-                    targetCount));
+            manualReconnectGuardActive = false;
+            manualReconnectReleasePending = false;
+            manualReconnectGuardFailureLogged = false;
+            manualReconnectReleaseFailureLogged = false;
+            manualReconnectGuardFailureCount = 0;
+            nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
+
+            string action = removedActiveGuard
+                ? "the game-and-Steam UDP reconnect lock was removed"
+                : "the armed manual request was cancelled before a reconnect lock became active";
+            Logger.WriteEnforcementLine(
+                $"[MANUAL BLOCK] Game LeaveLobby confirmed; {action}. Future lobby peer connections are allowed. Released manual ownership for {releasedPeers} peer(s).");
+        }
+
+        private void ReportManualReconnectReleaseFailure(string error)
+        {
+            if (manualReconnectReleaseFailureLogged)
+                return;
+
+            manualReconnectReleaseFailureLogged = true;
+            string message =
+                "Failed to deactivate the game-and-Steam UDP reconnect lock after leaving the lobby: " + error +
+                " The lock is still treated as active and removal will retry; new lobby connections may remain blocked until cleanup succeeds.";
+            ReportFirewallError(message, "Manual Peer Block Error", false, false);
+            QueueFirewallErrorNotification(message, "Manual Peer Block Error", false);
+        }
+
+        private void ScheduleManualReconnectGuardRetry(DateTime failedAttemptUtc)
+        {
+            manualReconnectGuardFailureCount++;
+            TimeSpan delay = manualReconnectGuardFailureCount <= ManualReconnectFastRetryFailures
+                ? EnforcementInterval
+                : ManualReconnectFailureBackoff;
+            nextManualReconnectGuardAttemptUtc = failedAttemptUtc.Add(delay);
         }
 
         private void Timer_Tick(object sender, EventArgs e)
@@ -362,40 +505,11 @@ namespace SteamP2PInfo
         {
             SteamPeerBase peer = target.Peer;
             ulong steamId = target.SteamId;
-            if (!TryRefreshPeer(peer, "manual block", out PeerNetworkEndpoint endpoint))
+            if (!manualReconnectGuardActive || peer == null)
                 return false;
-
-            if (endpoint == null)
-            {
-                ReportFirewallError($"Cannot manually block {steamId}: Steam did not expose an exact remote UDP endpoint. No broad UDP block was applied.", "Manual Peer Block Error", false, false);
-                return false;
-            }
-
-            if (!EnsureFirewall("Manual Peer Block Error", false, false))
-                return false;
-
-            FirewallBlockResult blockResult;
-            try
-            {
-                blockResult = firewall.Block(steamId, endpoint);
-            }
-            catch (Exception ex)
-            {
-                DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Failed to apply the manual WFP quarantine for peer " + steamId + ".");
-                ReportFirewallError($"Failed to apply the WFP flow quarantine for {steamId}: {ex.Message}", "Manual Peer Block Error", false, false);
-                return false;
-            }
-
-            if (!blockResult.Success)
-            {
-                ReportFirewallError($"Failed to apply the WFP flow quarantine for {steamId}: {blockResult.Error}", "Manual Peer Block Error", false, false);
-                return false;
-            }
 
             quarantinedPeers.Retain(steamId, PeerQuarantineOwner.ManualHotkey);
-
-            string endpointKey = endpoint.ToString();
-            if (target.ClosedEndpoints.Contains(endpointKey))
+            if (target.CloseConfirmedForCurrentPeer)
                 return true;
 
             bool sessionClosed = false;
@@ -410,12 +524,12 @@ namespace SteamP2PInfo
             }
 
             if (sessionClosed)
-                target.ClosedEndpoints.Add(endpointKey);
+                target.MarkCloseConfirmed();
             else
                 DiagnosticLogger.Write("ENFORCEMENT", "Steam did not confirm closing peer " + steamId + "; sustained scanning will retry this session.");
 
-            string scope = string.IsNullOrWhiteSpace(blockResult.Details) ? "exact UDP flow" : blockResult.Details;
-            Logger.WriteEnforcementLine($"[MANUAL BLOCK] Peer {steamId}; WFP blocked the {scope} to {endpoint}; Steam close result: {sessionClosed}");
+            Logger.WriteEnforcementLine(
+                $"[MANUAL BLOCK] Peer {steamId}; persistent game-and-Steam UDP reconnect lock active; Steam close result: {sessionClosed}");
             return true;
         }
 
@@ -509,6 +623,14 @@ namespace SteamP2PInfo
 
         private void ClearAllQuarantines()
         {
+            if (manualBlockScanActive)
+            {
+                // A transient configuration teardown must not open a reconnect
+                // window. LeaveLobby or disposal is the cleanup boundary.
+                ClearAutomaticQuarantines();
+                return;
+            }
+
             if (quarantinedPeers.Count > 0 || returningPeers.Count > 0)
             {
                 firewall?.RemoveAll();
@@ -519,16 +641,35 @@ namespace SteamP2PInfo
 
         internal void SteamPeerManager_PeerBeginAuthSession(ulong steamId)
         {
-            if (!quarantinedPeers.Contains(steamId))
-                return;
-
-            if (manualBlockScanActive && manualBlockTargets.ContainsKey(steamId))
+            if (manualReconnectReleasePending)
             {
-                manualBlockTargets[steamId].BeginReplacementSession();
+                TryReleaseManualReconnectGuard();
+                if (manualReconnectReleasePending)
+                {
+                    Logger.WriteEnforcementLine(
+                        $"[MANUAL BLOCK] Steam reported BeginAuthSession for {steamId} while lobby-exit cleanup is retrying; no new close request will be issued, but the UDP lock may still prevent the connection until removal succeeds.");
+                    return;
+                }
+            }
+
+            if (manualBlockScanActive)
+            {
+                ManualBlockTarget target = TrackManualBlockTarget(steamId);
+                target.BeginReplacementSession();
+                quarantinedPeers.Retain(steamId, PeerQuarantineOwner.ManualHotkey);
+                string guardStatus = manualReconnectGuardActive
+                    ? "the persistent UDP lock remains active and the logical session will be closed as soon as its peer entry is available."
+                    : "the manual request remains armed, but the WFP reconnect lock is not active; no session will be closed unless activation succeeds.";
                 Logger.WriteEnforcementLine(
-                    $"[MANUAL BLOCK] Returning peer {steamId} began a replacement auth session while sustained scanning is active; retained filters remain and the replacement peer will be scanned.");
+                    $"[MANUAL BLOCK] Steam reported a replacement auth session for {steamId}; {guardStatus}");
+
+                if (timer.IsEnabled)
+                    timer.Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(RetryPendingManualBlocks));
                 return;
             }
+
+            if (!quarantinedPeers.Contains(steamId))
+                return;
 
             Logger.WriteEnforcementLine(
                 $"[P2P QUARANTINE] Confirmed new BeginAuthSession for returning peer {steamId}; clearing that peer's retained WFP filters before creating the new peer entry.");
@@ -544,7 +685,7 @@ namespace SteamP2PInfo
         internal void SteamPeerManager_PeerRemoved(ulong steamId, PeerRemovalReason reason)
         {
             if (manualBlockTargets.TryGetValue(steamId, out ManualBlockTarget target))
-                target.Peer = null;
+                target.AttachPeer(null);
 
             // CloseSession runs in this companion process. Its transport/auth callbacks do
             // not prove that the attached game's independent Steam session has ended; in
@@ -553,11 +694,30 @@ namespace SteamP2PInfo
             // as a side effect of our own close call.
             if (quarantinedPeers.ShouldRetainAfterPeerRemoval(steamId))
             {
-                string continuation = manualBlockScanActive && manualBlockTargets.ContainsKey(steamId)
-                    ? "Sustained manual scanning remains active and will reacquire any replacement peer session."
-                    : "Waiting for a confirmed new BeginAuthSession before clearing this peer's quarantine.";
+                string retention;
+                if (manualReconnectReleasePending)
+                {
+                    retention =
+                        $"Retaining WFP protection state for {steamId} after {reason}; removal of the application-scoped UDP lock is pending and will retry.";
+                }
+                else if (manualBlockScanActive && manualReconnectGuardActive)
+                {
+                    retention =
+                        $"Retaining WFP protection for {steamId} after {reason}; the persistent application-scoped UDP lock remains active and will cover any replacement peer session.";
+                }
+                else if (manualBlockScanActive)
+                {
+                    retention =
+                        $"Retaining the manual block request for {steamId} after {reason}; the WFP reconnect lock is not active and no replacement session will be closed unless activation succeeds.";
+                }
+                else
+                {
+                    retention =
+                        $"Retaining WFP filters for {steamId} after {reason}; waiting for a confirmed new BeginAuthSession before clearing this peer's quarantine.";
+                }
+
                 Logger.WriteEnforcementLine(
-                    $"[P2P QUARANTINE] Retaining WFP filters for {steamId} after {reason}; companion IPC removal does not prove the game's connection ended. {continuation}");
+                    $"[P2P QUARANTINE] {retention} Companion IPC removal does not prove the game's connection ended.");
                 return;
             }
 
@@ -569,7 +729,16 @@ namespace SteamP2PInfo
         {
             if (manualBlockScanActive)
             {
-                CompleteManualBlockScan("the game left the lobby");
+                if (!manualReconnectReleasePending)
+                {
+                    manualReconnectReleasePending = true;
+                    nextManualReconnectGuardAttemptUtc = DateTime.MinValue;
+                    Logger.WriteEnforcementLine(
+                        "[MANUAL BLOCK] Game LeaveLobby observed; deactivating the game-and-Steam UDP reconnect lock before allowing the next lobby.");
+                }
+
+                TryReleaseManualReconnectGuard();
+                return;
             }
 
             if (quarantinedPeers.Count > 0)
@@ -582,18 +751,44 @@ namespace SteamP2PInfo
         private sealed class ManualBlockTarget
         {
             public ulong SteamId { get; }
-            public SteamPeerBase Peer { get; set; }
-            public HashSet<string> ClosedEndpoints { get; } = new HashSet<string>(StringComparer.Ordinal);
+            public SteamPeerBase Peer { get; private set; }
+            public bool CloseConfirmedForCurrentPeer { get; private set; }
+            private SteamPeerBase lastPeerInstance;
 
             public ManualBlockTarget(ulong steamId)
             {
                 SteamId = steamId;
             }
 
+            public void AttachPeer(SteamPeerBase peer)
+            {
+                if (peer == null)
+                {
+                    Peer = null;
+                    return;
+                }
+
+                // SteamPeerManager normally emits BeginAuthSession before replacing
+                // its peer object, but IPC log callbacks can be delayed or missed.
+                // A new object is therefore also treated as a new logical session,
+                // even when Steam reuses the same remote endpoint.
+                if (lastPeerInstance != null && !ReferenceEquals(lastPeerInstance, peer))
+                    CloseConfirmedForCurrentPeer = false;
+
+                Peer = peer;
+                lastPeerInstance = peer;
+            }
+
+            public void MarkCloseConfirmed()
+            {
+                CloseConfirmedForCurrentPeer = true;
+            }
+
             public void BeginReplacementSession()
             {
                 Peer = null;
-                ClosedEndpoints.Clear();
+                lastPeerInstance = null;
+                CloseConfirmedForCurrentPeer = false;
             }
         }
 
@@ -607,6 +802,41 @@ namespace SteamP2PInfo
             MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
 
+        private void QueueFirewallErrorNotification(string message, string title, bool respectHighPingMute)
+        {
+            if (disposed ||
+                firewallErrorShown ||
+                firewallErrorNotificationQueued ||
+                (respectHighPingMute && GameConfig.Current?.MuteHighPingEnforcementErrorNotifications == true))
+                return;
+
+            firewallErrorNotificationQueued = true;
+            try
+            {
+                timer.Dispatcher.BeginInvoke(
+                    DispatcherPriority.Normal,
+                    new Action(() =>
+                    {
+                        firewallErrorNotificationQueued = false;
+                        if (disposed ||
+                            firewallErrorShown ||
+                            (respectHighPingMute && GameConfig.Current?.MuteHighPingEnforcementErrorNotifications == true))
+                            return;
+
+                        firewallErrorShown = true;
+                        MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+                    }));
+            }
+            catch (Exception ex)
+            {
+                firewallErrorNotificationQueued = false;
+                DiagnosticLogger.WriteException(
+                    "ENFORCEMENT ERROR",
+                    ex,
+                    "Could not queue the manual reconnect-lock failure notification.");
+            }
+        }
+
         private bool EnsureFirewall(string errorTitle, bool respectHighPingMute, bool showErrorNotification = true)
         {
             if (firewall != null)
@@ -617,10 +847,12 @@ namespace SteamP2PInfo
                 firewall = firewallFactory();
                 if (firewall == null)
                     throw new InvalidOperationException("The firewall block service factory returned no service.");
+                lastFirewallInitializationError = null;
                 return true;
             }
             catch (Exception ex)
             {
+                lastFirewallInitializationError = ex.Message;
                 DiagnosticLogger.WriteException("FIREWALL ERROR", ex, "Could not initialize Windows Filtering Platform enforcement.");
                 ReportFirewallError($"Could not initialize Windows Filtering Platform enforcement: {ex.Message}", errorTitle, respectHighPingMute, showErrorNotification);
                 return false;

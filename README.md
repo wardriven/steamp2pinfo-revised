@@ -1,6 +1,6 @@
 # SteamP2PInfo — Elden Ring and Steam P2P Ping Monitor for Windows
 
-SteamP2PInfo is an open-source Windows tool that shows Steam P2P peers, ping, and connection quality for **Elden Ring** and compatible Steam Networking games. It provides an optional overlay, Steam recent-player support, local connection history, and an advanced manual exact-flow disconnect.
+SteamP2PInfo is an open-source Windows tool that shows Steam P2P peers, ping, and connection quality for **Elden Ring** and compatible Steam Networking games. It provides an optional overlay, Steam recent-player support, local connection history, and an advanced lobby-scoped manual UDP disconnect.
 
 It can help you inspect an Elden Ring or Steam P2P connection; it does **not** lower ping, fix lag, repair an ISP route, solve a Steam outage, or detect every connection in every Steam game.
 
@@ -10,7 +10,7 @@ It can help you inspect an Elden Ring or Steam P2P connection; it does **not** l
 
 Download the named Windows x64 release asset and extract the entire archive before running it. GitHub's automatically generated **Source code (zip)** and **Source code (tar.gz)** files contain source, not the ready-to-run application.
 
-As of 25 July 2026, the latest published release is **v1.4.0**. The connection-history feature documented below is present in the current v1.5 development working tree, not the v1.4.0 release; check the selected release notes before expecting it.
+The source tree is prepared for **v1.6.0**. Check the selected GitHub release notes and download the named Windows x64 asset rather than an automatically generated source archive.
 
 > **Project status:** active work in progress. Read [requirements and limitations](#requirements-and-compatibility) and [network and privacy safety](#network-and-privacy-safety) before relying on the overlay, history, or manual disconnect.
 
@@ -27,8 +27,8 @@ As of 25 July 2026, the latest published release is **v1.4.0**. The connection-h
 - An optional in-game-adjacent overlay for windowed and borderless play.
 - Steam recent-player integration for games that do not populate it themselves.
 - Per-game activity/debug logging.
-- In the v1.5 development tree, completed per-game connection history with average valid ping.
-- A manual hotkey that can close a detected peer session after an exact network flow is validated.
+- In v1.5 and later, completed per-game connection history with average valid ping.
+- A manual hotkey that atomically blocks game-and-Steam UDP reconnects for the current lobby before closing visible peer sessions.
 
 ## What it does not do
 
@@ -91,9 +91,9 @@ The customizable overlay follows the selected game window and can display live p
 
 Overlay position, content, colour, and related options are configured per game. Mixed-DPI, HDR, high-refresh-rate, drag, and capture behaviour vary by system and remain explicit stability-test areas.
 
-### Connection history (v1.5 development)
+### Connection history (v1.5 and later)
 
-This feature is not in the published v1.4.0 release. In the current WPF v1.5 development tree, the **History** tab records completed connections for the attached game, newest first. It keeps the latest 500 records and can show:
+The **History** tab records completed connections for the attached game, newest first. It keeps the latest 500 records and can show:
 
 - Steam name;
 - Steam ID;
@@ -104,28 +104,28 @@ Average ping uses valid samples collected during the connection. Missing ping or
 
 History is saved separately for each game in the local `history\` folder. **Raw IP addresses may be stored there.** Treat that folder as private and read [network and privacy safety](#network-and-privacy-safety) before sharing files. **Clear History** removes completed history for the attached game; it does not promise to remove matching data from separate activity or diagnostic logs.
 
-### Manual exact-flow disconnect
+### Lobby-scoped manual UDP disconnect
 
 Automatic high-ping disconnect was removed and disabled in v1.4.0 after stability and functionality problems. Ping remains visible so the user can decide whether to use the separate manual hotkey.
 
-Configure **Manual block hotkey** in the game's **Config** tab. With SteamP2PInfo attached and the game in the foreground, one press starts a bounded scan for currently detected peers.
+Configure **Manual block all peers hotkey** in the game's **Config** tab. With SteamP2PInfo attached and the game in the foreground, one press activates a UDP reconnect lock for the current lobby.
 
 The current action:
 
-1. scans every 250 ms through a 20-second minimum window;
-2. obtains a peer's remote IP/UDP port when available;
-3. uses ETW observations to identify the local UDP port and owning process;
-4. requires an exact local-port/remote-IP/remote-port flow;
-5. asks Windows Filtering Platform to block that flow inbound and outbound;
-6. only after WFP accepts the filters, calls Steam's logical close-session API;
-7. follows replacement sessions/endpoints for the originally observed Steam IDs within the same bounded action;
-8. stops arming on lobby exit or its safety timeout.
+1. opens the dynamic Windows Filtering Platform session while the game is attached, before the hotkey is needed;
+2. atomically installs application-identity UDP deny filters for the attached game and `steam.exe`, inbound and outbound over IPv4 and IPv6;
+3. lets WFP reauthorize and stop existing UDP flows while preventing new sockets, endpoints, relay routes, or ports from reconnecting;
+4. only after WFP accepts the complete filter transaction, calls Steam's logical close-session API for every visible peer;
+5. parses Steam IPC changes every second and retries logical session closes every 100 ms;
+6. covers peers and replacement sessions discovered after the original keypress;
+7. remains active through peer removal and same-lobby reconnect attempts;
+8. removes the dynamic filters when Steam IPC reports that the selected game left the lobby, allowing the next lobby or player connection; game or SteamP2PInfo exit remains a fallback cleanup boundary.
 
-For Elden Ring, **Allow Steam-owned exact-flow fallback** is enabled by default because the P2P transport can be owned by `steam.exe` rather than `eldenring.exe`. The fallback is allowed only when ETW observed the exact flow and no other process owns that local port in the same address family.
+This strict scope is intentional. Steam P2P traffic can be owned by `steam.exe`, and a new connection can use a different direct or relay address and port. Blocking only the previously observed five-tuple—or only Valve's documented port ranges—cannot guarantee that the UDP session stays disconnected.
 
-Windows sees network tuples, not Steam IDs. Traffic that shares the same Steam-owned tuple can still be affected. If Steam exposes no usable endpoint—commonly with Steam Datagram Relay—or ownership is shared/ambiguous, the app should refuse to broaden the block and record an error.
+The tradeoff is that this is not a per-Steam-ID firewall rule. While the lock is active, **all UDP traffic from the attached game and `steam.exe` is blocked**, so Steam voice, Remote Play, another concurrently running Steam game, and other Steam UDP features can be interrupted. TCP and web traffic are outside this lock. The lock is released when the selected game's process-matched `LeaveLobby` event is observed; close SteamP2PInfo to remove it sooner if the effect is unexpected.
 
-Successfully installed filters use a dynamic WFP session and should disappear if SteamP2PInfo exits. The current implementation can retain exact-flow filters for the tool/game lifetime after the immediate action ends, so close SteamP2PInfo if there is any uncertainty about retained filtering.
+Successfully installed filters use a dynamic WFP session and should disappear if SteamP2PInfo terminates unexpectedly as well as during normal shutdown.
 
 ## Troubleshooting
 
@@ -189,14 +189,14 @@ Do not interpret `-1` as real latency or a quality value of `1` as proof of a pe
 
 The manual action requires:
 
-- a currently detected peer;
-- a direct, usable remote endpoint;
-- an ETW-observed local UDP flow;
-- exclusive or otherwise approved ownership;
-- successful WFP filter creation;
+- administrator permission;
+- a resolvable executable path for the selected game and a running `steam.exe`;
+- successful atomic WFP filter creation;
 - a registered hotkey while the game has focus.
 
-Steam Datagram Relay, fake/unusable endpoints, shared ports, missing ETW samples, or ambiguous ownership should cause a refusal. Do not work around that refusal with a broad firewall rule.
+Protected and anti-cheat game processes are resolved with Windows' limited-information image-path API rather than module enumeration. If the path is temporarily unavailable during attach, the manual action resolves it again before each eligible activation attempt.
+
+No currently detected peer or exposed direct endpoint is required. If WFP cannot create the complete process-scoped lock, the app visibly reports the failure, leaves Steam sessions open, and retries without creating a partial policy. It makes two 100 ms recovery attempts before backing off to a 30-second retry interval so a persistent Windows service or permission failure cannot stall the UI or flood the log; pressing the hotkey again always requests an immediate retry.
 
 ### Hotkey did not register
 
@@ -219,13 +219,13 @@ This fork is not observation-only:
 - ETW observes Windows network events.
 - Manual enforcement can install WFP filters and call Steam session-close APIs.
 - Activity/diagnostic records can contain Steam IDs and endpoints.
-- WPF v1.5 history can store direct peer IP addresses locally.
+- WPF v1.5-and-later history can store direct peer IP addresses locally.
 - The app checks GitHub Releases for updates when it starts, which is a network request.
 
 Practical safeguards:
 
 - Leave automatic high-ping disconnect disabled; current versions ignore legacy attempts to enable it.
-- Use the manual action only when you understand game timeout/penalty consequences and the Steam-owned-flow boundary.
+- Use the manual action only when you understand game timeout/penalty consequences and that it blocks all UDP for the attached game and `steam.exe` until that game reports leaving the current lobby, or until the tool/game exits.
 - Close SteamP2PInfo if filtering appears to affect anything unexpected.
 - Never share `history\`, activity logs, diagnostic logs, or screenshots containing endpoints without reviewing/redacting them.
 - Treat Steam IDs and usernames as personal data in support reports even when profiles are public.
@@ -247,7 +247,7 @@ The application needs to learn which Steam IDs the selected game authenticates. 
 BeginAuthSession, EndAuthSession, LeaveLobby, SendClanChatMessage
 ```
 
-`BeginAuthSession`/`EndAuthSession` identify peer authentication, `LeaveLobby` helps end stale lobby state, and the dummy chat call encourages periodic log flushing.
+`BeginAuthSession`/`EndAuthSession` identify peer authentication. A process-matched `LeaveLobby` ends stale lobby state and releases an active manual reconnect lock so the next lobby or player can connect. The dummy chat call encourages periodic log flushing.
 
 The application does not need to read game memory or inject code into the game for this workflow.
 
@@ -302,7 +302,7 @@ Remove IP addresses, endpoints, Steam IDs/usernames you do not intend to publish
 - [WinUI 3 migration plan](docs/WINUI3_MIGRATION_PLAN.md) — feature-parity matrix and phased cutover.
 - [Discoverability and website plan](docs/DISCOVERABILITY_PLAN.md) — GitHub metadata, search intent, content, measurement, and website decision.
 
-The WinUI 3 folder is currently a prototype, not a feature-complete replacement. It is one version behind the WPF working tree and omits connection history. WPF v1.5 remains the migration reference until every parity gate passes.
+The WinUI 3 folder is currently a prototype, not a feature-complete replacement. It lags behind the WPF working tree and omits connection history. WPF v1.6 remains the migration reference until every parity gate passes.
 
 ## Development and contributions
 
@@ -311,7 +311,7 @@ Before proposing a feature:
 - check the [revised issue tracker](https://github.com/wardriven/steamp2pinfo-revised/issues);
 - read the relevant safety, privacy, compatibility, and migration plan;
 - keep parser/policy behaviour testable without Steam or a live game;
-- avoid broad network rules, unsupported game-memory access, or claims not backed by a maintained test matrix;
+- keep any broad network control explicit, application-bound, temporary, and backed by a maintained test matrix;
 - never commit real player endpoints or unredacted IPC/diagnostic fixtures.
 
 For binaries, use Releases. Source archives are for building/development and do not contain a ready-to-run application.

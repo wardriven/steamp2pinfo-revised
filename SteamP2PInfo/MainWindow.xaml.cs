@@ -155,14 +155,19 @@ namespace SteamP2PInfo
                 if (!HotkeyManager.Enabled && GameConfig.Current.HotkeysEnabled)
                     HotkeyManager.Enable();
 
-                if ((timerTicks = (timerTicks + 1) % 6) == 0)
+                timerTicks = (timerTicks + 1) % 6;
+                if (timerTicks == 0)
                 {
                     // Rather not have the settings update on a loop, but 
                     // Fody generated OnChange seems to break PropertyChanged 
                     // for GameConfig. So do this for now.
                     GameConfig.Current?.Save();
-                    SteamPeerManager.UpdatePeerList();
                 }
+
+                // Parse Steam's IPC log every second so a replacement auth
+                // session becomes visible promptly. Only the sixth poll emits
+                // the legacy dummy IPC call used to encourage a Steam log flush.
+                SteamPeerManager.UpdatePeerList(timerTicks == 0);
 
                 peers.Clear();
                 foreach (SteamPeerBase p in SteamPeerManager.GetPeers())

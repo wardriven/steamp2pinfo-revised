@@ -231,7 +231,7 @@ namespace SteamP2PInfo
             return null;
         }
 
-        public async static void UpdatePeerList()
+        public async static void UpdatePeerList(bool flushSteamIpc = true)
         {
             if (isShuttingDown || Interlocked.CompareExchange(ref updateInProgress, 1, 0) != 0)
                 return;
@@ -239,10 +239,13 @@ namespace SteamP2PInfo
             long cycleId = Interlocked.Increment(ref updateCycleId);
             try
             {
-                // Make sure we're constantly writing to the IPC log to force Steam to eventually flush
-                // This call was chosen because it's not something a game will call often
-                // Thus we avoid blowing up the IPC log with dummy calls
-                SteamFriends.SendClanChatMessage(new CSteamID(0), "");
+                if (flushSteamIpc)
+                {
+                    // Periodically encourage Steam to flush its IPC log. Reading
+                    // new log data can happen more frequently without emitting a
+                    // dummy IPC call on every poll.
+                    SteamFriends.SendClanChatMessage(new CSteamID(0), "");
+                }
 
                 if (mustReopenLog)
                 {

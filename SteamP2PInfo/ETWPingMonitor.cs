@@ -170,8 +170,11 @@ namespace SteamP2PInfo
                 if (!recentUdpFlows.TryGetValue(endpoint, out Dictionary<FlowObservationKey, DateTime> flows))
                     return Array.Empty<ObservedUdpFlow>();
 
-                return flows.Keys
-                    .Select(flow => new ObservedUdpFlow(flow.ProcessId, flow.LocalPort))
+                return flows
+                    .Select(flow => new ObservedUdpFlow(
+                        flow.Key.ProcessId,
+                        flow.Key.LocalPort,
+                        flow.Value))
                     .OrderBy(flow => flow.ProcessId)
                     .ThenBy(flow => flow.LocalPort)
                     .ToArray();
@@ -346,14 +349,23 @@ namespace SteamP2PInfo
                 if (packet.ProcessID != trackedProcessId && !watchedEndpoints.Contains(endpoint))
                     return;
 
-                DateTime now = DateTime.UtcNow;
-                PurgeExpiredFlows(now);
+                DateTime nowUtc = DateTime.UtcNow;
+                DateTime observedUtc = packet.TimeStamp.ToUniversalTime();
+                PurgeExpiredFlows(nowUtc);
                 if (!recentUdpFlows.TryGetValue(endpoint, out Dictionary<FlowObservationKey, DateTime> ports))
                 {
                     ports = new Dictionary<FlowObservationKey, DateTime>();
                     recentUdpFlows.Add(endpoint, ports);
                 }
-                ports[new FlowObservationKey(packet.ProcessID, localPort)] = now;
+
+                var flowKey = new FlowObservationKey(packet.ProcessID, localPort);
+                if (!ports.TryGetValue(flowKey, out DateTime existingObservationUtc) ||
+                    observedUtc > existingObservationUtc)
+                {
+                    // Use the ETW event's timestamp rather than callback time so a
+                    // delayed delivery cannot make stale packet evidence look fresh.
+                    ports[flowKey] = observedUtc;
+                }
             }
         }
 
@@ -400,11 +412,13 @@ namespace SteamP2PInfo
         {
             public int ProcessId { get; }
             public ushort LocalPort { get; }
+            public DateTime LastObservedUtc { get; }
 
-            public ObservedUdpFlow(int processId, ushort localPort)
+            public ObservedUdpFlow(int processId, ushort localPort, DateTime lastObservedUtc)
             {
                 ProcessId = processId;
                 LocalPort = localPort;
+                LastObservedUtc = lastObservedUtc;
             }
         }
     }

@@ -8,12 +8,12 @@ Do not release the existing `SteamP2PInfo-WINUI3` folder as the successor to the
 
 Static comparison found:
 
-- the current WPF working tree identifies as **v1.5.0**;
+- the current WPF working tree identifies as **v1.6.0**;
 - the WinUI 3 prototype identifies as **v1.4.0**;
-- the prototype omits the complete connection-history feature: store, tracker/model, tab, clearing behaviour, and v1.5 data compatibility;
+- the prototype omits the complete connection-history feature: store, tracker/model, tab, clearing behaviour, and v1.5-and-later data compatibility;
 - both variants still carry the unresolved ETW startup, attach-rollback, detection, ping, lifecycle, privacy, and enforcement risks documented in [the upstream issue audit](UPSTREAM_ISSUE_AUDIT.md).
 
-The prototype is valuable research, but WPF v1.5 must remain the behavioural and data-format reference until a written parity matrix and its tests pass.
+The prototype is valuable research, but WPF v1.6 must remain the behavioural and data-format reference until a written parity matrix and its tests pass.
 
 ## Supported foundation
 
@@ -41,7 +41,7 @@ Microsoft's migration guidance is explicit that WPF concepts need WinUI-specific
 
 The matrix below is the minimum release contract. “Prototype finding” is from static inspection, not runtime certification.
 
-| Capability | WPF v1.5 reference | WinUI prototype finding | WinUI release acceptance |
+| Capability | WPF v1.6 reference | WinUI prototype finding | WinUI release acceptance |
 |---|---|---|---|
 | Launch/elevation | x64, administrator manifest, one process. | Present; administrator manifest and process-count guard. | UAC accept/deny, rapid relaunch, second-launch activation, crash recovery, and clean exit tested. |
 | Game attach | Select target window, enter/store App ID, initialize Steam and monitoring. | Surface is present; attach is still non-transactional. | Explicit state machine, preflight, cancellation, rollback after every injected failure, and actionable error state. |
@@ -53,7 +53,7 @@ The matrix below is the minimum release contract. “Prototype finding” is fro
 | Session list | Steam name, ID, ping, quality and live updates. | Present with different WinUI layout. | Field, sort/display, empty/error, update cadence, selection, and accessibility parity. |
 | Recent-player support | Can call Steam recent-player behaviour according to per-game setting. | Present statically. | Setting migrates; supported/unsupported result is visible; no crash when Steam is unavailable. |
 | Open Steam profile | Double-click/action opens the correct peer. | Present statically. | Correct profile once, keyboard equivalent, Steam/browser fallback, no malformed URI. |
-| Connection history | Per-game completed records, average ping, newest first, 500 records, clear; current model can include IP. | **Missing.** | Backward-compatible v1.5 import, privacy decision implemented, valid-sample averaging, retention, corruption recovery, clear, and redacted export. |
+| Connection history | Per-game completed records, average ping, newest first, 500 records, clear; current model can include IP. | **Missing.** | Backward-compatible v1.5-and-later import, privacy decision implemented, valid-sample averaging, retention, corruption recovery, clear, and redacted export. |
 | Per-game configuration | Activity/debug logs, overlay, recent-player, sound, hotkeys, manual block settings and legacy fields. | Mostly present using a different settings implementation. | Every field mapped with default, validation, migration, save, reset, corrupt-file recovery, and unknown-field preservation policy. |
 | Activity/diagnostic logs | Per-game logs plus debug diagnostics. | Present in some form. | One LocalAppData policy, bounded retention, early-start diagnostics, atomic writes, and redacted support export. |
 | New-session sound | Windows system beep option. | Present. | Exact parity first; configurable accessible notification can follow as an independently tested feature. |
@@ -65,7 +65,7 @@ The matrix below is the minimum release contract. “Prototype finding” is fro
 | Overlay drag/offset | Current configurable offsets; known drag inconsistency. | No proven complete parity. | Deliberate decision and test for dragging, persisted offsets, scaling, and bounds recovery. |
 | Manual hotkey | Low-level global hook and per-game key. | Present with a custom WinUI input surface. | Conflict/error state, immediate callback return, serialized work, focus rules, key-repeat suppression, unhook/rebind/shutdown tests. |
 | Exact-flow observation | ETW maps traffic/ownership. | Present with newer dependency. | Clean-machine native load, one owned session, health state, IPv4/IPv6, concurrent traffic, cancellation, teardown. |
-| Manual WFP disconnect | Exact tuple, dynamic filters, Steam/game-owned flow policy, Steam logical close. | Present; concurrency model differs. | All safety gates from [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md), including ambiguous/refused cases and unrelated Steam traffic. |
+| Manual WFP disconnect | Atomic game-and-Steam application-identity UDP policy, dynamic filters, Steam logical close, and process-matched lobby release. | Present; concurrency model differs. | All safety gates from [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md), including documented collateral scope, atomic failure, same-lobby reconnect, lobby release, and unrelated-process traffic. |
 | Game/lobby exit | Ends monitoring/action and closes app to release Steam App ID. | Present in intent. | Exactly-once cleanup regardless of exit order, exception, shutdown, or forced target loss. |
 | Single-instance behaviour | Process-name count and close. | Similar process-count approach. | Use Windows App SDK app-instance redirection; second launch activates/forwards to the owned instance. |
 | Data compatibility | Existing WPF settings/config/history/log locations and formats. | No complete WPF migration, history absent. | Documented discovery order, backup, schema migration, atomic commit, rollback, and downgrade policy. |
@@ -219,7 +219,7 @@ If MSIX passes the proof, Microsoft documents [App Installer automatic update an
 
 ## Final cutover checklist
 
-- [ ] WPF v1.5 reference commit and schemas recorded.
+- [ ] WPF v1.6 reference commit and schemas recorded.
 - [ ] Every parity row has an automated or documented manual test.
 - [ ] History imports without loss and follows the approved endpoint privacy policy.
 - [ ] Every config field/default migrates or has an explicit deprecation.
@@ -228,7 +228,7 @@ If MSIX passes the proof, Microsoft documents [App Installer automatic update an
 - [ ] Attach rolls back at every injected failure point.
 - [ ] Overlay passes DPI/HDR/high-refresh/OBS/native-lifetime tests.
 - [ ] Monitoring makes no network change.
-- [ ] Manual enforcement passes exact-scope and cleanup tests.
+- [ ] Manual enforcement passes documented application-scope, same-lobby reconnect, lobby-release, and cleanup tests.
 - [ ] Single-instance redirection replaces process counting.
 - [ ] Clean supported Win10 and Win11 artifact tests pass.
 - [ ] Accessibility and eight-hour soak pass.

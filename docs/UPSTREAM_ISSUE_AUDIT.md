@@ -34,18 +34,18 @@ The original maintainer could reasonably dismiss [#54](https://github.com/tremwi
 Before another stable release, the application needs a repeatable test proving that:
 
 - monitoring alone never installs a filter or closes a session;
-- a manual action affects only validated, exact UDP flows for the intended current peer or peers;
-- Steam login, store, downloads, chat, voice, and unrelated games continue to work;
-- ambiguous, shared, or relayed endpoints are refused rather than broadened;
-- every filter is removed on ordinary exit, game exit, attach failure, crash, forced termination, and the next startup;
-- the action cannot remain armed for a later lobby;
+- a manual action atomically installs the complete application-scoped UDP lock before any Steam close call;
+- Steam login/store/web traffic remains available, while the UI and README explicitly warn that Steam voice, Remote Play, other games, and all other `steam.exe` UDP can be interrupted while locked;
+- missing application identity or partial WFP policy creation is refused without closing a Steam session;
+- every filter is removed when the selected game's process-matched `LeaveLobby` ends the affected lobby, and on ordinary exit, game exit, attach failure, crash, forced termination, and the next startup;
+- once activated, the action remains armed through peer removal and same-lobby reconnect attempts, then releases on the process-matched `LeaveLobby` event so a later lobby or player can connect;
 - the UI states the multiplayer timeout/penalty and misuse risks before the feature is enabled.
 
 This is the first release gate, not a normal backlog item.
 
 ### 2. Persistent endpoint data changes the meaning of upstream issue #55
 
-The original maintainer declined [#55](https://github.com/tremwil/SteamP2PInfo/issues/55), which requested access to player IP addresses. The current WPF v1.5 history model stores IP addresses, while diagnostics and enforcement logs can also contain endpoints.
+The original maintainer declined [#55](https://github.com/tremwil/SteamP2PInfo/issues/55), which requested access to player IP addresses. The current WPF v1.6 history model stores IP addresses, while diagnostics and enforcement logs can also contain endpoints.
 
 Before release:
 
@@ -75,9 +75,9 @@ For the older Steam networking path, ping sampling still depends on narrow ETW/S
 | Issue | Upstream result | Revised-application finding | Priority and acceptance test |
 |---|---|---|---|
 | [#2 Ghost process on close](https://github.com/tremwil/SteamP2PInfo/issues/2) | Open; overlay shutdown suspected. | Cleanup code exists, but timers, hooks, ETW, WFP, and background threads still require runtime proof. | **High, runtime gate.** Run at least 50 app-first and game-first shutdown cycles, overlay on/off. Exit promptly, release all resources, and allow immediate relaunch. |
-| [#3 Unexpected disconnect](https://github.com/tremwil/SteamP2PInfo/issues/3) | Closed as likely game/EAC instability. | That conclusion predates this fork's network enforcement. | **Critical.** A/B-test monitor-only, armed, used, expired, and crash paths. Only an explicitly selected current flow may be affected. |
+| [#3 Unexpected disconnect](https://github.com/tremwil/SteamP2PInfo/issues/3) | Closed as likely game/EAC instability. | That conclusion predates this fork's network enforcement. | **Critical.** A/B-test monitor-only, armed, used, and crash paths. Monitoring must remain passive; strict mode must affect only the documented game/steam.exe UDP application scope and clean up on exit. |
 | [#4 IPC parsing stops](https://github.com/tremwil/SteamP2PInfo/issues/4) | Closed as fixed in 1.0.2. | The revision still depends on file notifications, log flush timing, and a saved read offset. | **High.** Replay partial writes, duplicate notifications, delayed flush, truncation, rotation, restart, and malformed lines with no missed/duplicate peer events. |
-| [#5 Disconnect button](https://github.com/tremwil/SteamP2PInfo/issues/5) | Declined because of timeout, penalty, and abuse risk. | The fork implements adjacent manual block/close behaviour. | **Critical product-safety gate.** Explicit opt-in, target precision, visible armed state, lobby/time boundary, cleanup, audit record, and penalty warning are required. |
+| [#5 Disconnect button](https://github.com/tremwil/SteamP2PInfo/issues/5) | Declined because of timeout, penalty, and abuse risk. | The fork implements adjacent manual block/close behaviour. | **Critical product-safety gate.** Explicit opt-in, application-scope warning, visible armed state, exit cleanup, audit record, and penalty warning are required. |
 | [#6 False “already running”](https://github.com/tremwil/SteamP2PInfo/issues/6) | Closed unreproduced. | Both variants use process enumeration, which is weaker than an owned single-instance primitive. | **Medium.** Test rapid relaunch, crash, rename, separate Windows sessions, and real second launch; activate the live instance and never let a dead one block startup. |
 | [#7 Hard-coded Elden Ring process](https://github.com/tremwil/SteamP2PInfo/issues/7) | Fixed by PR #8. | Current parser uses the selected process name. | **Regression gate.** A non-Elden-Ring fixture/game must work while unrelated game IPC lines are ignored. |
 | [#9 OBS-friendly overlay](https://github.com/tremwil/SteamP2PInfo/issues/9) | Open. | The overlay is still a separate transparent/tool window. | **Medium.** Test OBS Game, Window, and Display Capture. If Window Capture cannot see it, plan an explicit capture mode rather than claiming compatibility. |
@@ -90,7 +90,7 @@ For the older Steam networking path, ping sampling still depends on narrow ETW/S
 | [#17 Peers rarely detected](https://github.com/tremwil/SteamP2PInfo/issues/17) | Marked fixed by `BeginAuthSession` in 1.1. | Current parser retains that approach. | **High regression gate.** Cover host, client, invader, phantom, arena, rapid rematch, and abrupt exit. |
 | [#19 Overlay tearing/high refresh](https://github.com/tremwil/SteamP2PInfo/issues/19) | Reporter resolved it using G-Sync. | That is not an application fix; WinUI composition will differ again. | **Medium.** Compare overlay off/on at 60/120/144/240 Hz, VRR on/off, mixed DPI, and multiple monitors. |
 | [#20 Blank session info](https://github.com/tremwil/SteamP2PInfo/issues/20) | Closed as probably covered by later detection work. | Not conclusively verified. | **High.** Diagnostics must identify command inactive, file not changing, parser mismatch, Steam API failure, or UI binding failure as separate stages. |
-| [#21 Write ping to a log](https://github.com/tremwil/SteamP2PInfo/issues/21) | Open; maintainer welcomed a contribution. | WPF v1.5 now persists average-ping history; the WinUI prototype omits it. | **Medium/partly addressed.** Test sampling, invalid-value rejection, 500-record retention, corruption, deletion, export, per-game isolation, and WinUI parity. |
+| [#21 Write ping to a log](https://github.com/tremwil/SteamP2PInfo/issues/21) | Open; maintainer welcomed a contribution. | WPF v1.5 and later persist average-ping history; the WinUI prototype omits it. | **Medium/partly addressed.** Test sampling, invalid-value rejection, 500-record retention, corruption, deletion, export, per-game isolation, and WinUI parity. |
 | [#22 Null reference during attach](https://github.com/tremwil/SteamP2PInfo/issues/22) | Closed after an anecdotal Defender attribution. | No conclusive code fix follows from that explanation. | **High.** Test Defender/Controlled Folder Access, denied URI launch, missing Steam components, cancelled selection, null window, and partial initialization. |
 | [#23 Recent players appears empty](https://github.com/tremwil/SteamP2PInfo/issues/23) | Closed after locating the right Steam surface. | Documentation/UX. | **Low.** Explain that local peer detection and Steam's recent-player population are separate and verify both current Steam routes. |
 | [#24 Unauthorized access on custom drive](https://github.com/tremwil/SteamP2PInfo/issues/24) | Closed without a demonstrated app fix. | Same path family remains relevant. | **High.** Valid files must work regardless of app/Steam drive; bare directories must be rejected before any open call. |
@@ -120,7 +120,7 @@ For the older Steam networking path, ping sampling still depends on narrow ETW/S
 | [#52 Intermittently empty overlay](https://github.com/tremwil/SteamP2PInfo/issues/52) | Open; startup timing affected success. | Suggests command/log lifecycle health, not only parsing. | **High.** Test every Steam/app/game startup order, beta/stable Steam, stale logs, warm restarts, and command entered once/twice. Surface live logging health. |
 | [#53 Elden Ring ping always `-1`](https://github.com/tremwil/SteamP2PInfo/issues/53) | Open. | Older networking path still depends on ETW/STUN observations. | **High.** Cover direct/relay, old/new APIs, IPv4/IPv6, endpoint change, and ETW availability; show a reason, never raw `-1`. |
 | [#54 App causes Steam disconnect](https://github.com/tremwil/SteamP2PInfo/issues/54) | Closed because the original app did not alter traffic. | **Upstream conclusion invalid for this fork** because WFP filters and session close calls now exist. | **Critical.** Exact-scope, unrelated-Steam-traffic, crash cleanup, power-loss, next-start cleanup, and ambiguity-refusal tests block release. |
-| [#55 Expose player IP addresses](https://github.com/tremwil/SteamP2PInfo/issues/55) | Declined by the original maintainer. | WPF v1.5 persists IPs in history and logs can contain endpoints. | **High privacy gate.** Define minimization, retention, access, deletion, redaction, export, and sharing-warning behaviour before release. |
+| [#55 Expose player IP addresses](https://github.com/tremwil/SteamP2PInfo/issues/55) | Declined by the original maintainer. | WPF v1.5 and later persist IPs in history and logs can contain endpoints. | **High privacy gate.** Define minimization, retention, access, deletion, redaction, export, and sharing-warning behaviour before release. |
 | [#56 App closes after entering command](https://github.com/tremwil/SteamP2PInfo/issues/56) | Open; a commenter fixed a bad path. | Same path/attach transaction family. | **High.** Malformed, directory, inaccessible, missing, stale, and locked paths must never cause app shutdown. |
 | [#57 AC6 attach null reference](https://github.com/tremwil/SteamP2PInfo/issues/57) | Open. | No evidence that the anecdotal #22 explanation covers it. | **High.** Test clean/existing config, invalid App ID, target-window loss, Steam API failure, overlay failure, and rollback. |
 | [#58 Ping `-1`, quality `1`](https://github.com/tremwil/SteamP2PInfo/issues/58) | Open. | Unavailable data can appear as a valid-looking perfect value. | **High correctness gate.** Use nullable/reason-coded measurements and never calculate quality from an invalid ping series. |

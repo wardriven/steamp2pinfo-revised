@@ -13,7 +13,7 @@ SteamP2PInfo should be a trustworthy, Windows-only diagnostic companion for Elde
 - provide a readable window and optional overlay;
 - retain privacy-safe connection history;
 - add peers to Steam's recent-player list and open profiles;
-- permit an explicitly chosen, tightly scoped manual disconnect only when the exact flow can be proven;
+- permit an explicitly chosen, clearly disclosed, application-scoped manual disconnect only when its complete WFP policy can be installed atomically;
 - fail safely and explain which stage is unavailable.
 
 It should not claim to lower latency, fix lag, identify every Steam connection, support every Steam game, or make an unsafe best guess about a peer's traffic.
@@ -22,7 +22,7 @@ It should not claim to lower latency, fix lag, identify every Steam connection, 
 
 | Area | Static finding | Consequence |
 |---|---|---|
-| Main application | The current WPF working tree identifies itself as v1.5.0. | Use this behaviour and its data formats as the reference until WinUI parity is proven. |
+| Main application | The current WPF working tree identifies itself as v1.6.0. | Use this behaviour and its data formats as the reference until WinUI parity is proven. |
 | WinUI 3 | The prototype identifies as v1.4.0 and lacks the complete History feature. | It is a useful prototype, not a replacement build. |
 | Peer discovery | Still reads Steam's IPC log for `BeginAuthSession`, `EndAuthSession`, and `LeaveLobby`, with a dummy call used to encourage flushing. | Recurring blank/missed-peer reports remain a release risk. |
 | Old networking API ping | Depends on ETW packet observation and narrow STUN packet-size assumptions. | Open `-1` ping/false-quality reports are structurally plausible. |
@@ -35,7 +35,7 @@ It should not claim to lower latency, fix lag, identify every Steam connection, 
 
 A stable release is not merely one that compiles. It must meet all of these gates:
 
-1. **Network safety:** monitoring is passive; manual enforcement is exact, bounded, attributable, and cleaned up on every exit path.
+1. **Network safety:** monitoring is passive; manual enforcement is explicit, application-bound, lobby-bounded, attributable, and cleaned up on every exit path.
 2. **Crash-free setup:** a bad path, corrupt config, missing native DLL, UAC denial, unavailable ETW session, dead game window, or Steam launch failure never causes an unhandled exit.
 3. **Honest measurements:** unavailable ping/quality has a reason; an invalid value can never look like a successful or perfect measurement.
 4. **Reliable detection:** fixture and live-session tests cover log creation, partial writes, flush delay, truncation, rotation, restart, rapid lobbies, and each supported Steam API path.
@@ -51,23 +51,23 @@ Relevant upstream issues: [#3](https://github.com/tremwil/SteamP2PInfo/issues/3)
 
 Plan:
 
-- Write a formal enforcement invariant: no validated exact flow means no filter and no Steam close call.
+- Write a formal enforcement invariant: no complete, atomically committed application guard means no Steam close call.
 - Keep automatic high-ping enforcement disabled, and add a regression test proving that legacy configuration cannot reactivate it. This is the safe resolution for [revised issue #6](https://github.com/wardriven/steamp2pinfo-revised/issues/6).
 - Separate **game-owned exact flow**, **Steam-owned exact-flow fallback**, **relayed/unavailable**, and **ambiguous ownership** in the model and UI.
-- Bind filters to application identity where Windows supports it, as well as direction, protocol, address family, local port, remote address, and remote port.
-- Observe and test IPv6 before claiming IPv6 enforcement.
-- Time-bound the action and its filters; make lobby transition, app/game exit, attach failure, and process termination definitive cleanup boundaries.
+- Keep exact-flow filtering for the diagnostic/legacy path, but use ALE application identity for strict manual reconnect prevention.
+- Cover both IPv4 and IPv6 ALE authorization layers before claiming strict reconnect prevention.
+- Keep the strict action armed through peer removal and same-lobby reconnect attempts. Release it on the selected game's process-matched `LeaveLobby` event so a later lobby or player can connect; retain app/game exit, attach failure, and process termination as fallback cleanup boundaries.
 - Keep the WFP session dynamic, and also perform idempotent explicit cleanup plus a defensive startup audit.
-- Move work out of the low-level keyboard callback: enqueue one edge-triggered request, return immediately, and serialize enforcement on an owned worker.
+- Pre-open WFP at attach, commit the blocking transaction on the hotkey edge, then move Steam close calls and follow-up work out of the low-level keyboard callback.
 - Add a visible pre-use warning covering session timeout, multiplayer penalties, shared Steam-flow risk, and appropriate use.
 - Record a privacy-redacted audit event for each refusal, filter, close attempt, timeout, and cleanup.
 - Close [revised whitelist request #3](https://github.com/wardriven/steamp2pinfo-revised/issues/3) as obsolete with automatic enforcement, unless a distinct manual-exclusion workflow is specified and tested.
 
 Acceptance:
 
-- A test matrix covers IPv4/IPv6, game-owned/Steam-owned sockets, direct/relay transport, endpoint replacement, shared ports, multiple peers, repeated key presses, lobby exit, game exit, ordinary close, crash, forced termination, sleep/resume, and the next startup.
-- Steam store, login, downloads, chat, voice, Remote Play, and unrelated games are unaffected in every monitor-only and targeted test.
-- Ambiguity always produces a refusal, never a broader rule.
+- A test matrix covers IPv4/IPv6, game-owned/Steam-owned sockets, direct/relay transport, endpoint replacement, shared ports, multiple peers, repeated key presses, same-lobby reconnect attempts, process-matched lobby exit and a permitted next-lobby connection, game exit, ordinary close, crash, forced termination, sleep/resume, and the next startup.
+- Steam is unaffected in monitor-only tests. Strict-mode tests verify and document the expected attached-game/steam.exe UDP interruption while unrelated processes and TCP/web traffic remain usable.
+- Missing application identity or a partial transaction always produces a refusal and never a Steam close call.
 
 ### P0.2 Minimize and protect endpoint data
 
@@ -262,7 +262,7 @@ These are separate projects, not conditions to start the WinUI migration:
 1. **WPF safety release:** finish Phase 0 on the current reference UI.
 2. **WPF reliability release:** complete the highest-risk Phase 1 foundations and capture parity fixtures.
 3. **WinUI preview:** side-by-side beta only after every row in the migration matrix has an owner and test.
-4. **WinUI release candidate:** no missing v1.5 features; clean-machine, accessibility, performance, native, and rollback gates pass.
+4. **WinUI release candidate:** no missing v1.6 features; clean-machine, accessibility, performance, native, and rollback gates pass.
 5. **WinUI stable:** retain the last WPF stable build and documented rollback for at least one full stable cycle.
 6. **Post-parity redesigns:** least privilege, packaging changes, multi-context, tray, and other new features happen one at a time.
 

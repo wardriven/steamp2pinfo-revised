@@ -20,7 +20,7 @@ This follows GitHub's guidance on [repository topics](https://docs.github.com/en
 
 ### One-sentence product statement
 
-> SteamP2PInfo is an open-source Windows tool that shows Steam P2P peers, ping, and connection quality for Elden Ring and compatible Steam Networking games, with an optional overlay, recent-player support, privacy-conscious history, and a manual exact-flow disconnect.
+> SteamP2PInfo is an open-source Windows tool that shows Steam P2P peers, ping, and connection quality for Elden Ring and compatible Steam Networking games, with an optional overlay, recent-player support, privacy-conscious history, and a lobby-scoped manual UDP disconnect.
 
 Use a shorter version where space is limited:
 
@@ -34,8 +34,8 @@ Use a shorter version where space is limited:
 - Supports compatible games that authenticate peers through the required Steam calls.
 - Optional windowed/borderless overlay.
 - Can add peers to Steam's recent-player list.
-- WPF v1.5 working tree includes local per-game history.
-- Manual enforcement is exact-flow and refuses cases where a usable endpoint/ownership cannot be established.
+- WPF v1.6 includes local per-game history.
+- Manual enforcement atomically applies a temporary application-scoped UDP reconnect lock to the attached game and steam.exe. It survives same-lobby reconnect attempts, releases on the selected game's process-matched `LeaveLobby` event, and states its collateral impact explicitly.
 
 Every capability still needs a current tested-compatibility label before it is described as universally supported.
 
@@ -87,7 +87,7 @@ Do not add game names until that game appears in the maintained compatibility ma
 
 - Set the website field only after a durable site exists.
 - Create a current 1280×640 social-preview image showing the real application and readable product name.
-- Pin the latest stable release and keep its asset name unambiguous. The v1.4.0 asset already follows the useful `SteamP2PInfo-v1.4.0-win-x64.zip` pattern.
+- Pin the latest stable release and keep its asset name unambiguous. For v1.6.0, use `SteamP2PInfo-v1.6.0-win-x64.zip`.
 - Add issue forms for bug report, game compatibility result, and feature request.
 - Add `SECURITY.md`, a plain-language privacy page, support boundaries, and a compatibility page as future Markdown work.
 - Keep Releases as the canonical binary source; distinguish release assets from GitHub's automatic source archives.
