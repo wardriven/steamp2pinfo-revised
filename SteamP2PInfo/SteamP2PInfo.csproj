@@ -32,7 +32,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>1.4.0.0</ApplicationVersion>
+    <ApplicationVersion>1.6.0.0</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -270,8 +270,11 @@
     <Compile Include="Config\IConfigUIElement.cs" />
     <Compile Include="Config\OverlayAnchor.cs" />
     <Compile Include="Config\OverlayConfig.cs" />
+    <Compile Include="ConnectionHistoryStore.cs" />
     <Compile Include="DiagnosticLogger.cs" />
     <Compile Include="Logger.cs" />
+    <Compile Include="PeerConnectionHistoryTracker.cs" />
+    <Compile Include="PeerHistoryEntry.cs" />
     <Compile Include="ReverseTextReader.cs" />
     <Compile Include="SteamPeerBase.cs" />
     <Compile Include="ETWPingMonitor.cs" />

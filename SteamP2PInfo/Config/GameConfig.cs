@@ -101,12 +101,12 @@ namespace SteamP2PInfo.Config
         public bool HotkeysEnabled { get; set; } = true;
 
         /// <summary>
-        /// Optional hotkey that blocks and disconnects every currently connected peer.
+        /// Optional hotkey that blocks UDP reconnects and disconnects every peer.
         /// A value of zero is unassigned.
         /// </summary>
         [JsonProperty("manual_block_hotkey")]
         [ConfigBindingElement("Manual block all peers hotkey", typeof(HotKeyBox), "HotKeyProperty",
-            Tooltip: "While the selected game window is foreground, blocks each connected peer's exact UDP flow and then closes its Steam session. Leave unassigned to disable.",
+            Tooltip: "While the selected game window is foreground, blocks all UDP for that game and steam.exe, then closes every Steam peer session. The lock stops same-lobby reconnects, then releases when the game reports LeaveLobby or the game/tool exits. It can interrupt Steam voice, Remote Play, or another Steam game while active. Leave unassigned to disable.",
             ValueConverter: typeof(HotkeyConverter))]
         public int ManualBlockHotkey { get; set; } = 0;
 
@@ -134,12 +134,12 @@ namespace SteamP2PInfo.Config
         }
 
         /// <summary>
-        /// Permit a narrowly scoped fallback when ETW proves that the exact P2P
-        /// tuple is owned by steam.exe instead of the selected game process.
+        /// Legacy exact-flow setting retained for compatibility with older
+        /// enforcement paths. The v1.6 manual reconnect lock does not use it.
         /// </summary>
         [JsonProperty("allow_steam_owned_exact_flow_fallback")]
-        [ConfigBindingElement("Allow Steam-owned exact-flow fallback", typeof(ToggleSwitch), "IsOnProperty",
-            Tooltip: "If a manually blocked peer's exact UDP flow is owned by steam.exe, block only that observed local-port/remote-IP/remote-port tuple. This can affect Steam traffic sharing the same tuple.",
+        [ConfigBindingElement("Allow Steam-owned exact-flow fallback (legacy)", typeof(ToggleSwitch), "IsOnProperty",
+            Tooltip: "Used only by legacy exact-flow quarantine paths. The v1.6 manual all-peers hotkey uses the lobby-scoped game-and-Steam UDP lock instead.",
             UIElementProperties: new object[] {
                 new object[] { "OnContent", "Yes" },
                 new object[] { "OffContent", "No" }

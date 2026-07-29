@@ -34,6 +34,8 @@ namespace SteamP2PInfo
     internal interface IFirewallBlockService : IDisposable
     {
         FirewallBlockResult Block(ulong steamId, PeerNetworkEndpoint endpoint);
+        FirewallBlockResult BlockManualReconnect();
+        FirewallBlockResult RemoveManualReconnect();
         FirewallBlockResult BlockAllGameUdp(ulong steamId);
         FirewallBlockResult BlockGameOwnedUdpPorts(ulong steamId);
         void Remove(ulong steamId);
@@ -112,6 +114,20 @@ namespace SteamP2PInfo
         public FirewallBlockResult BlockAllGameUdp(ulong steamId)
         {
             return BlockInternal(steamId, null);
+        }
+
+        public FirewallBlockResult BlockManualReconnect()
+        {
+            return FirewallBlockResult.Failed(
+                "The legacy Windows Firewall backend cannot create the atomic game-and-Steam reconnect lock. " +
+                "Windows Filtering Platform enforcement is required.");
+        }
+
+        public FirewallBlockResult RemoveManualReconnect()
+        {
+            // This backend cannot create the application-scoped reconnect lock,
+            // so there is no corresponding global policy to remove.
+            return FirewallBlockResult.Ok("manual reconnect lock already inactive");
         }
 
         public FirewallBlockResult BlockGameOwnedUdpPorts(ulong steamId)

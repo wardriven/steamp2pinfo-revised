@@ -32,6 +32,7 @@ namespace SteamP2PInfo
     public partial class MainWindow
     {
         private ObservableCollection<SteamPeerBase> peers;
+        private ObservableCollection<PeerHistoryEntry> historyEntries;
         private OverlayWindow overlay;
         private Timer timer;
         private int timerTicks = 0;
@@ -40,8 +41,15 @@ namespace SteamP2PInfo
         private int previousPeersAmount = 0;
         private P2PEnforcementCoordinator enforcementCoordinator;
         private GameConfig subscribedConfig;
+        private ConnectionHistoryStore historyStore;
+        private PeerConnectionHistoryTracker historyTracker;
+        private string historyGameDisplayName;
+        private bool historyStorageAvailable;
+        private bool historyCleanupNeedsRetry;
+        private bool historyClearInProgress;
 
         private const string STEAM_COMMAND = "log_ipc \"BeginAuthSession,EndAuthSession,LeaveLobby,SendClanChatMessage\"";
+        private const int MAX_HISTORY_ENTRIES = 500;
 
         private WindowSelectDialog.WindowInfo wInfo;
 
@@ -84,6 +92,9 @@ namespace SteamP2PInfo
 
             peers = new ObservableCollection<SteamPeerBase>();
             dataGridSession.DataContext = peers;
+            historyEntries = new ObservableCollection<PeerHistoryEntry>();
+            dataGridHistory.DataContext = historyEntries;
+            UpdateHistoryTabState();
             Title = "Steam P2P INFO /W PingGuard [" + VersionCheck.CurrentVersionDisplay + "]";
 
             timer = new Timer(Timer_Tick, null, Timeout.Infinite, Timeout.Infinite);
@@ -144,14 +155,19 @@ namespace SteamP2PInfo
                 if (!HotkeyManager.Enabled && GameConfig.Current.HotkeysEnabled)
                     HotkeyManager.Enable();
 
-                if ((timerTicks = (timerTicks + 1) % 6) == 0)
+                timerTicks = (timerTicks + 1) % 6;
+                if (timerTicks == 0)
                 {
                     // Rather not have the settings update on a loop, but 
                     // Fody generated OnChange seems to break PropertyChanged 
                     // for GameConfig. So do this for now.
                     GameConfig.Current?.Save();
-                    SteamPeerManager.UpdatePeerList();
                 }
+
+                // Parse Steam's IPC log every second so a replacement auth
+                // session becomes visible promptly. Only the sixth poll emits
+                // the legacy dummy IPC call used to encourage a Steam log flush.
+                SteamPeerManager.UpdatePeerList(timerTicks == 0);
 
                 peers.Clear();
                 foreach (SteamPeerBase p in SteamPeerManager.GetPeers())
@@ -213,6 +229,8 @@ namespace SteamP2PInfo
             enforcementCoordinator?.Dispose();
             enforcementCoordinator = null;
             SteamPeerManager.Shutdown();
+            if (historyTracker != null)
+                historyTracker.ConnectionCompleted -= HistoryTracker_ConnectionCompleted;
             if (GameConfig.Current != null) GameConfig.Current.Save();
             Settings.Default.Save();
             if (overlay != null) overlay.Close();
@@ -346,7 +364,8 @@ namespace SteamP2PInfo
 
                     wInfo = dialog.SelectedWindow;
                     DiagnosticLogger.Write("ACTION", "Steam API initialized successfully.");
-                    SteamPeerManager.Init();
+                    InitializeHistoryForAttachedGame(wInfo.ProcessName, wInfo.Title);
+                    SteamPeerManager.Init(historyTracker);
 
                     if(MustEnterSteamCommand())
                         SteamConsoleHelper();
@@ -489,6 +508,186 @@ namespace SteamP2PInfo
                     DiagnosticLogger.WriteException("ERROR", e, "Failed to copy the Steam console command to the clipboard.");
                     MessageBox.Show($"Failed to copy command to clipboard. Please enter '{STEAM_COMMAND}' manually.\n\n {e}", "Write to Clipboard Failed!", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+            }
+        }
+
+        private void InitializeHistoryForAttachedGame(string processName, string gameTitle)
+        {
+            if (historyTracker != null)
+                historyTracker.ConnectionCompleted -= HistoryTracker_ConnectionCompleted;
+
+            historyStore = ConnectionHistoryStore.ForGame(processName);
+            historyEntries.Clear();
+
+            bool historyLoaded = historyStore.TryLoad(out string historyError);
+            historyStorageAvailable = historyLoaded;
+            historyCleanupNeedsRetry = historyLoaded && historyStore.HasRecoveryCopies;
+            if (!string.IsNullOrWhiteSpace(historyError))
+                DiagnosticLogger.Write(historyLoaded ? "HISTORY" : "ERROR", historyError);
+
+            if (!historyLoaded)
+            {
+                MessageBox.Show(
+                    "Connection history for this game could not be loaded. The existing file was left unchanged, and history recording is disabled for this attachment.\n\n" + historyError,
+                    "Connection History Warning",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            if (historyLoaded)
+            {
+                foreach (PeerHistoryEntry entry in historyStore.Entries)
+                    historyEntries.Add(entry);
+
+                historyTracker = new PeerConnectionHistoryTracker(historyStore);
+                historyTracker.ConnectionCompleted += HistoryTracker_ConnectionCompleted;
+            }
+            else
+            {
+                historyTracker = null;
+            }
+
+            historyGameDisplayName = string.IsNullOrWhiteSpace(gameTitle) ? processName : gameTitle;
+            UpdateHistoryTabState();
+        }
+
+        private void HistoryTracker_ConnectionCompleted(PeerHistoryEntry entry)
+        {
+            if (entry == null)
+                return;
+
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(() => HistoryTracker_ConnectionCompleted(entry)));
+                return;
+            }
+
+            historyEntries.Insert(0, entry);
+            while (historyEntries.Count > MAX_HISTORY_ENTRIES)
+                historyEntries.RemoveAt(historyEntries.Count - 1);
+            UpdateHistoryTabState();
+        }
+
+        private void UpdateHistoryTabState()
+        {
+            bool attached = historyStore != null;
+            bool hasEntries = attached && historyStorageAvailable && historyEntries.Count > 0;
+            bool hasRecoveryCopies =
+                attached &&
+                historyStorageAvailable &&
+                (historyCleanupNeedsRetry || historyStore.HasRecoveryCopies);
+
+            if (!attached)
+            {
+                textHistoryScope.Text = "No game attached";
+                textHistoryEmpty.Text = "Attach a game to view that game's connection history.";
+            }
+            else if (!historyStorageAvailable)
+            {
+                textHistoryScope.Text = historyGameDisplayName + " — history unavailable";
+                textHistoryEmpty.Text = "Existing history could not be loaded and was left unchanged.";
+            }
+            else
+            {
+                textHistoryScope.Text = string.Format(
+                    "{0} — {1} of {2} saved connection{3}",
+                    historyGameDisplayName,
+                    historyEntries.Count,
+                    MAX_HISTORY_ENTRIES,
+                    historyEntries.Count == 1 ? "" : "s");
+                textHistoryEmpty.Text = hasRecoveryCopies
+                    ? "No readable records remain. Use Clear History to remove preserved recovery copies for this game."
+                    : "No previous connections have been recorded for this game yet.";
+            }
+
+            dataGridHistory.Visibility = hasEntries ? Visibility.Visible : Visibility.Collapsed;
+            textHistoryEmpty.Visibility = hasEntries ? Visibility.Collapsed : Visibility.Visible;
+            buttonClearHistory.IsEnabled =
+                historyStorageAvailable &&
+                (hasEntries || hasRecoveryCopies) &&
+                !historyClearInProgress;
+        }
+
+        private async void buttonClearHistory_Click(object sender, RoutedEventArgs e)
+        {
+            bool hasRecoveryCopies =
+                historyStore != null &&
+                historyStorageAvailable &&
+                (historyCleanupNeedsRetry || historyStore.HasRecoveryCopies);
+            if (historyStore == null ||
+                !historyStorageAvailable ||
+                (historyEntries.Count == 0 && !hasRecoveryCopies) ||
+                historyClearInProgress)
+            {
+                return;
+            }
+
+            historyClearInProgress = true;
+            UpdateHistoryTabState();
+            try
+            {
+                MetroDialogSettings dialogSettings = new MetroDialogSettings
+                {
+                    ColorScheme = MetroDialogColorScheme.Accented,
+                    AffirmativeButtonText = "Clear History",
+                    NegativeButtonText = "Cancel"
+                };
+
+                string confirmationMessage;
+                if (historyEntries.Count == 0)
+                {
+                    confirmationMessage = string.Format(
+                        "Delete preserved connection-history recovery copies for {0}? This cannot be undone.",
+                        historyGameDisplayName);
+                }
+                else
+                {
+                    confirmationMessage = string.Format(
+                        "Delete all {0} saved connection record{1} for {2}{3}? This cannot be undone.",
+                        historyEntries.Count,
+                        historyEntries.Count == 1 ? "" : "s",
+                        historyGameDisplayName,
+                        hasRecoveryCopies ? " and its preserved recovery copies" : "");
+                }
+
+                MessageDialogResult result = await this.ShowMessageAsync(
+                    "Clear connection history?",
+                    confirmationMessage,
+                    MessageDialogStyle.AffirmativeAndNegative,
+                    dialogSettings);
+
+                if (result != MessageDialogResult.Affirmative)
+                    return;
+
+                if (!historyStore.TryClear(out string historyError))
+                {
+                    DiagnosticLogger.Write("ERROR", "Could not clear connection history: " + historyError);
+                    MessageBox.Show(
+                        "Connection history could not be cleared. No records were removed.\n\n" + historyError,
+                        "Connection History Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                    return;
+                }
+
+                historyEntries.Clear();
+                historyCleanupNeedsRetry =
+                    !string.IsNullOrWhiteSpace(historyError) ||
+                    historyStore.HasRecoveryCopies;
+                if (!string.IsNullOrWhiteSpace(historyError))
+                {
+                    DiagnosticLogger.Write("ERROR", historyError);
+                    MessageBox.Show(
+                        historyError,
+                        "Connection History Warning",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+            finally
+            {
+                historyClearInProgress = false;
+                UpdateHistoryTabState();
             }
         }
 
